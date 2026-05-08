@@ -25,9 +25,18 @@ export async function prepDesaturate(): Promise<void> {
 
 export async function prepAutoLevels(): Promise<void> {
   await executeAsModal("BrushBuddy: auto-tone", async () => {
-    // PS 2025 records this as "autoTone" (Image > Auto Tone). The legacy
-    // "autoLevels" event id is no longer recognized.
-    await bp([{ _obj: "autoTone", _options: { dialogOptions: "dontDisplay" } }]);
+    // PS records this differently across versions. Try the known names in order.
+    const ids = ["autoTone", "autoLevels", "autoContrast"];
+    const errors: string[] = [];
+    for (const id of ids) {
+      try {
+        await bp([{ _obj: id, _options: { dialogOptions: "dontDisplay" } }]);
+        return; // success
+      } catch (e: any) {
+        errors.push(`${id}: ${e?.message ?? String(e)}`);
+      }
+    }
+    throw new Error(`No known auto-tone event id worked. Tried:\n  ${errors.join("\n  ")}`);
   });
 }
 
