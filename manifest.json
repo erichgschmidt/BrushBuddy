@@ -1,0 +1,31 @@
+{
+  "manifestVersion": 5,
+  "id": "com.brushbuddy.plugin",
+  "name": "BrushBuddy",
+  "version": "0.0.1",
+  "main": "index.html",
+  "host": [
+    {
+      "app": "PS",
+      "minVersion": "26.0.0",
+      "data": {
+        "apiVersion": 2,
+        "enableMenuRecording": true
+      }
+    }
+  ],
+  "requiredPermissions": {
+    "localFileSystem": "request"
+  },
+  "entrypoints": [
+    {
+      "type": "panel",
+      "id": "brushBuddyPanel",
+      "label": { "default": "BrushBuddy" },
+      "minimumSize": { "width": 280, "height": 360 },
+      "maximumSize": { "width": 1000, "height": 2000 },
+      "preferredDockedSize": { "width": 320, "height": 720 },
+      "preferredFloatingSize": { "width": 360, "height": 720 }
+    }
+  ]
+}
