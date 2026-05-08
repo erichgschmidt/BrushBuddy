@@ -1,0 +1,15 @@
+node_modules/
+dist/
+build/
+.cache/
+.parcel-cache/
+.DS_Store
+Thumbs.db
+*.log
+.env
+.env.local
+.vscode/
+.idea/
+*.ccx
+.uxp/
+.claude/
