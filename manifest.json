@@ -15,7 +15,8 @@
     }
   ],
   "requiredPermissions": {
-    "localFileSystem": "request"
+    "localFileSystem": "request",
+    "clipboard": "readAndWrite"
   },
   "entrypoints": [
     {

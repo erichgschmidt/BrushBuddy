@@ -147,6 +147,20 @@ export function Panel() {
               }}
               style={{ ...btnStyle, fontSize: 10, padding: "2px 8px" }}
             >copy dump JSON</button>
+            <button
+              onClick={async () => {
+                try {
+                  const fs = require("uxp").storage.localFileSystem;
+                  const f = await fs.getFileForSaving("brushbuddy-dump.json", { types: ["json"] });
+                  if (!f) { append("info", "save canceled"); return; }
+                  const logText = log.map((e) => `[${e.ts}] ${e.level === "err" ? "ERR " : e.level === "ok" ? "OK  " : "    "}${e.text}`).join("\n");
+                  const dump = getLastDumpJson();
+                  await f.write(`=== BrushBuddy log ===\n${logText}\n\n=== Last dump JSON ===\n${dump}\n`);
+                  append("ok", `💾 saved to ${f.nativePath ?? f.name}`);
+                } catch (e: any) { append("err", `save failed: ${e?.message ?? e}`); }
+              }}
+              style={{ ...btnStyle, fontSize: 10, padding: "2px 8px" }}
+            >save log+dump…</button>
             <button onClick={() => setLog([])} style={{ ...btnStyle, fontSize: 10, padding: "2px 8px" }}>clear</button>
           </div>
         </div>
