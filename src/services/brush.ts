@@ -152,6 +152,61 @@ export async function selectLivePreviewBrush(): Promise<string> {
 // Apply primary dynamics (Stipple-ish recipe).
 // Sets the *current brush preset's* settings via currentToolOptions.
 // ---------------------------------------------------------------------------
+// Minimal: just bump spacing. If this works, we know the target ref is right
+// and the failure is in one of the inner sub-descriptors.
+export async function applyMinimalSpacingOnly(): Promise<void> {
+  await executeAsModal("BrushBuddy: spacing only", async () => {
+    await bp([{
+      _obj: "select",
+      _target: [{ _ref: "paintbrushTool" }],
+      _options: { dialogOptions: "dontDisplay" },
+    }]);
+    await bp([{
+      _obj: "set",
+      _target: [{
+        _ref: [
+          { _ref: "property", _property: "currentToolOptions" },
+          { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
+        ],
+      }],
+      to: {
+        _obj: "currentToolOptions",
+        spacing: { _unit: "percentUnit", _value: 180 },
+      },
+      _options: { dialogOptions: "dontDisplay" },
+    }]);
+  });
+}
+
+// Minimal Shape Dynamics only — adds one panel.
+export async function applyShapeDynamicsOnly(): Promise<void> {
+  await executeAsModal("BrushBuddy: shape dynamics only", async () => {
+    await bp([{
+      _obj: "select",
+      _target: [{ _ref: "paintbrushTool" }],
+      _options: { dialogOptions: "dontDisplay" },
+    }]);
+    await bp([{
+      _obj: "set",
+      _target: [{
+        _ref: [
+          { _ref: "property", _property: "currentToolOptions" },
+          { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
+        ],
+      }],
+      to: {
+        _obj: "currentToolOptions",
+        shapeDynamics: {
+          _obj: "shapeDynamics",
+          useTipDynamics: true,
+          sizeDynamics: 25,
+        },
+      },
+      _options: { dialogOptions: "dontDisplay" },
+    }]);
+  });
+}
+
 export async function applyStippleDynamics(): Promise<void> {
   await executeAsModal("BrushBuddy: apply dynamics", async () => {
     // Ensure brush tool is active — PS gates `set` on currentToolOptions by tool context.

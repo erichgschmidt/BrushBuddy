@@ -7,6 +7,8 @@ import {
   selectBrushTool,
   selectLivePreviewBrush,
   applyStippleDynamics,
+  applyMinimalSpacingOnly,
+  applyShapeDynamicsOnly,
   applyDualBrush,
   renderProofStroke,
   loopTest,
@@ -72,12 +74,18 @@ export function Panel() {
         <Btn disabled={busy} onClick={() => run("debug: last name", async () => ({ lastDefined: getLastDefinedBrushName() }))}>debug: last name</Btn>
       </Section>
 
-      <Section label="2. Apply dynamics">
-        <Btn disabled={busy} onClick={() => run("dynamics", () => applyStippleDynamics())}>
-          Apply Stipple dynamics
+      <Section label="2. Apply dynamics (bisect)">
+        <Btn disabled={busy} onClick={() => run("spacing only", () => applyMinimalSpacingOnly())}>
+          spacing only (minimal)
+        </Btn>
+        <Btn disabled={busy} onClick={() => run("shape dynamics only", () => applyShapeDynamicsOnly())}>
+          + shape dynamics
+        </Btn>
+        <Btn disabled={busy} onClick={() => run("full stipple", () => applyStippleDynamics())}>
+          full stipple recipe
         </Btn>
         <Btn disabled={busy} onClick={() => run("dual brush", () => applyDualBrush())}>
-          Apply Dual Brush (risky)
+          dual brush
         </Btn>
       </Section>
 
