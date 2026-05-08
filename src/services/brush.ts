@@ -91,9 +91,21 @@ export async function selectLivePreviewBrush(): Promise<void> {
 // ---------------------------------------------------------------------------
 export async function applyStippleDynamics(): Promise<void> {
   await executeAsModal("BrushBuddy: apply dynamics", async () => {
+    // Ensure brush tool is active — PS gates `set` on currentToolOptions by tool context.
+    await bp([{
+      _obj: "select",
+      _target: [{ _ref: "paintbrushTool" }],
+      _options: { dialogOptions: "dontDisplay" },
+    }]);
+    // Standard target syntax for the active tool's options.
     await bp([{
       _obj: "set",
-      _target: [{ _ref: "currentToolOptions" }],
+      _target: [{
+        _ref: [
+          { _ref: "property", _property: "currentToolOptions" },
+          { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
+        ],
+      }],
       to: {
         _obj: "currentToolOptions",
         spacing: { _unit: "percentUnit", _value: 180 },
@@ -131,8 +143,18 @@ export async function applyStippleDynamics(): Promise<void> {
 export async function applyDualBrush(): Promise<void> {
   await executeAsModal("BrushBuddy: apply dual brush", async () => {
     await bp([{
+      _obj: "select",
+      _target: [{ _ref: "paintbrushTool" }],
+      _options: { dialogOptions: "dontDisplay" },
+    }]);
+    await bp([{
       _obj: "set",
-      _target: [{ _ref: "currentToolOptions" }],
+      _target: [{
+        _ref: [
+          { _ref: "property", _property: "currentToolOptions" },
+          { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
+        ],
+      }],
       to: {
         _obj: "currentToolOptions",
         dualBrush: {
@@ -158,6 +180,13 @@ export async function renderProofStroke(): Promise<void> {
     const doc = getActiveDoc();
     const w = doc.width;
     const h = doc.height;
+
+    // Brush tool must be active for `stroke` to be available.
+    await bp([{
+      _obj: "select",
+      _target: [{ _ref: "paintbrushTool" }],
+      _options: { dialogOptions: "dontDisplay" },
+    }]);
 
     const proofLayer = doc.layers.find((l: any) => l.name === PROOF_LAYER_NAME);
     if (!proofLayer) {
