@@ -24,10 +24,10 @@ export async function prepDesaturate(): Promise<void> {
 }
 
 export async function prepAutoLevels(): Promise<void> {
-  await executeAsModal("BrushBuddy: auto-levels", async () => {
-    // Image > Auto Tone (sometimes recorded as "autoLevels", sometimes "autoTone").
-    // Try autoLevels first; if that's the rejected one, swap to autoTone.
-    await bp([{ _obj: "autoLevels", _options: { dialogOptions: "dontDisplay" } }]);
+  await executeAsModal("BrushBuddy: auto-tone", async () => {
+    // PS 2025 records this as "autoTone" (Image > Auto Tone). The legacy
+    // "autoLevels" event id is no longer recognized.
+    await bp([{ _obj: "autoTone", _options: { dialogOptions: "dontDisplay" } }]);
   });
 }
 
@@ -70,18 +70,33 @@ export async function selectBrushTool(): Promise<void> {
 
 export async function selectLivePreviewBrush(): Promise<void> {
   await executeAsModal("BrushBuddy: select live preview", async () => {
-    // First make sure we're on the brush tool.
+    // Brush tool first — required for any brush operation.
     await bp([{
       _obj: "select",
       _target: [{ _ref: "paintbrushTool" }],
       _options: { dialogOptions: "dontDisplay" },
     }]);
-    // Then select the named brush preset.
-    await bp([{
-      _obj: "select",
-      _target: [{ _ref: "brush", _name: LIVE_PREVIEW_NAME }],
-      _options: { dialogOptions: "dontDisplay" },
-    }]);
+    // Note: defineBrush already activates the new preset as the current brush,
+    // so this re-select is mostly a safety step. PS 2025 doesn't accept
+    // _ref: "brush" with _name; try a few alternatives and tolerate failure.
+    const attempts: any[][] = [
+      // Attempt A — by id property of presetManager (need preset index; skip).
+      // Attempt B — by name on toolPreset (works for tool presets, not brushes).
+      [{ _obj: "select", _target: [{ _ref: "toolPreset", _name: LIVE_PREVIEW_NAME }], _options: { dialogOptions: "dontDisplay" } }],
+      // Attempt C — set brush property of paintbrushTool.
+      [{
+        _obj: "set",
+        _target: [{ _ref: "paintbrushTool" }],
+        to: { _obj: "paintbrushTool", brush: { _ref: "brush", _name: LIVE_PREVIEW_NAME } },
+        _options: { dialogOptions: "dontDisplay" },
+      }],
+    ];
+    for (const cmd of attempts) {
+      try { await bp(cmd); return; } catch { /* try next */ }
+    }
+    // All attempts failed — but defineBrush usually leaves the new preset active,
+    // so this is non-fatal for the spike. Throw so the user sees it logged.
+    throw new Error("Could not explicitly re-select Live Preview by name. The brush should already be active from defineBrush — try the next button anyway.");
   });
 }
 
