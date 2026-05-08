@@ -8,6 +8,7 @@
 // we can find and prune them on session end.
 
 import { bp, executeAsModal, getActiveDoc } from "./photoshop";
+import { action } from "photoshop";
 
 export const LIVE_PREVIEW_NAME = "BrushBuddy Live Preview";
 export const PROOF_LAYER_NAME = "BrushBuddy Proof";
@@ -43,13 +44,15 @@ export async function defineBrushFromSelection(name: string = LIVE_PREVIEW_NAME)
       throw new Error("Make a rectangular selection first.");
     }
     // Snapshot brush list before, define, snapshot after, diff to find the new one.
-    const before = await listBrushNames();
+    // Optional: snapshot brush list to detect if PS renamed our preset.
+    // listBrushNames may fail on some PS builds — that's fine, we trust the
+    // name parameter (PS 2025 honors it).
+    const before = await listBrushNames().catch(() => [] as string[]);
     await bp([{ _obj: "defineBrush", name, _options: { dialogOptions: "dontDisplay" } }]);
-    const after = await listBrushNames();
+    const after = await listBrushNames().catch(() => [] as string[]);
     const beforeSet = new Set(before);
     const newOnes = after.filter((n) => !beforeSet.has(n));
-    // Prefer our requested name if PS honored it; otherwise take the new entry.
-    const actual = newOnes.find((n) => n === name) ?? newOnes[newOnes.length - 1] ?? after[after.length - 1] ?? name;
+    const actual = newOnes.find((n) => n === name) ?? newOnes[newOnes.length - 1] ?? name;
     LAST_DEFINED_BRUSH_NAME = actual;
     return actual;
   });
@@ -75,11 +78,12 @@ async function listBrushNames(): Promise<string[]> {
       _options: { dialogOptions: "dontDisplay" },
     }],
   ];
+  // Try each shape; swallow PS dialog errors — `listBrushNames` is optional
+  // diagnostics, not load-bearing.
   for (const cmd of attempts) {
     try {
-      const r = await bp(cmd);
+      const r = await action.batchPlay(cmd, {});
       const top = r?.[0] as any;
-      // Try several response shapes.
       const candidates: any[] =
         top?.brushes ??
         top?.presetManager?.brushes ??
@@ -87,7 +91,7 @@ async function listBrushNames(): Promise<string[]> {
         [];
       const names = candidates.map((b: any) => b?.name).filter((n: any) => typeof n === "string");
       if (names.length) return names;
-    } catch { /* try next */ }
+    } catch { /* try next, no log */ }
   }
   return [];
 }
