@@ -55,19 +55,47 @@ export async function defineBrushFromSelection(name: string = LIVE_PREVIEW_NAME)
   });
 }
 
-// List all brush preset names via batchPlay get-property.
+// List all brush preset names via batchPlay get-property. Tries a few shapes
+// because PS's get-property accepts slightly different forms across versions.
 async function listBrushNames(): Promise<string[]> {
-  try {
-    const r = await bp([{
+  const attempts: any[] = [
+    // Form A — property reference, application target (most common).
+    [{
       _obj: "get",
-      _target: [{ _ref: "property", _property: "brushes" }, { _ref: "application", _enum: "ordinal", _value: "targetEnum" }],
+      _target: [
+        { _ref: "property", _property: "brushes" },
+        { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
+      ],
       _options: { dialogOptions: "dontDisplay" },
-    }]);
-    const brushes = (r?.[0] as any)?.brushes ?? [];
-    return brushes.map((b: any) => b?.name).filter((n: any) => typeof n === "string");
-  } catch {
-    return [];
+    }],
+    // Form B — direct brush listing.
+    [{
+      _obj: "get",
+      _target: [{ _ref: "brush", _enum: "ordinal", _value: "targetEnum" }],
+      _options: { dialogOptions: "dontDisplay" },
+    }],
+  ];
+  for (const cmd of attempts) {
+    try {
+      const r = await bp(cmd);
+      const top = r?.[0] as any;
+      // Try several response shapes.
+      const candidates: any[] =
+        top?.brushes ??
+        top?.presetManager?.brushes ??
+        (Array.isArray(top) ? top : []) ??
+        [];
+      const names = candidates.map((b: any) => b?.name).filter((n: any) => typeof n === "string");
+      if (names.length) return names;
+    } catch { /* try next */ }
   }
+  return [];
+}
+
+// Public for the debug button in the panel.
+export async function debugListBrushes(): Promise<{ count: number; first10: string[]; last10: string[] }> {
+  const names = await listBrushNames();
+  return { count: names.length, first10: names.slice(0, 10), last10: names.slice(-10) };
 }
 
 // Combined "capture" — runs prep + define, but each step's failure is caught

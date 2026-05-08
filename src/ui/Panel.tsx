@@ -11,6 +11,8 @@ import {
   renderProofStroke,
   loopTest,
   cleanupVolatiles,
+  debugListBrushes,
+  getLastDefinedBrushName,
 } from "../services/brush";
 
 type LogEntry = { id: number; ts: string; level: "info" | "ok" | "err"; text: string };
@@ -66,6 +68,8 @@ export function Panel() {
       <Section label="1c. Select brush">
         <Btn disabled={busy} onClick={() => run("select brush tool", () => selectBrushTool())}>brush tool</Btn>
         <Btn disabled={busy} onClick={() => run("select Live Preview", () => selectLivePreviewBrush())}>Live Preview preset</Btn>
+        <Btn disabled={busy} onClick={() => run("debug: list brushes", () => debugListBrushes())}>debug: list brushes</Btn>
+        <Btn disabled={busy} onClick={() => run("debug: last name", async () => ({ lastDefined: getLastDefinedBrushName() }))}>debug: last name</Btn>
       </Section>
 
       <Section label="2. Apply dynamics">
