@@ -108,65 +108,78 @@ export async function debugListBrushes(): Promise<{ count: number; first10: stri
  * authoritative descriptor shape we need to mirror in our `set` calls.
  */
 export async function debugDumpCurrentToolOptions(): Promise<any> {
-  // Make sure the brush tool is active first.
-  await executeAsModal("BrushBuddy: ensure brush tool", async () => {
-    await bp([{
-      _obj: "select",
-      _target: [{ _ref: "paintbrushTool" }],
-      _options: { dialogOptions: "dontDisplay" },
-    }]);
-  });
-
-  const attempts: { label: string; cmd: any[] }[] = [
-    {
-      label: "property currentToolOptions of application",
-      cmd: [{
-        _obj: "get",
-        _target: [
-          { _ref: "property", _property: "currentToolOptions" },
-          { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
-        ],
-      }],
-    },
-    {
-      label: "currentToolOptions targetEnum",
-      cmd: [{
-        _obj: "get",
-        _target: [{ _ref: "currentToolOptions", _enum: "ordinal", _value: "targetEnum" }],
-      }],
-    },
-    {
-      label: "paintbrushTool targetEnum",
-      cmd: [{
-        _obj: "get",
-        _target: [{ _ref: "paintbrushTool", _enum: "ordinal", _value: "targetEnum" }],
-      }],
-    },
-    {
-      label: "brush targetEnum",
-      cmd: [{
-        _obj: "get",
-        _target: [{ _ref: "brush", _enum: "ordinal", _value: "targetEnum" }],
-      }],
-    },
-  ];
-
-  const results: { label: string; ok: boolean; keys?: string[]; sample?: any; error?: string }[] = [];
-  for (const { label, cmd } of attempts) {
+  return await executeAsModal("BrushBuddy: dump tool options", async () => {
+    // Brush tool active first.
     try {
-      const r = await action.batchPlay(cmd, {});
-      const top = r?.[0] ?? null;
-      const keys = top && typeof top === "object" ? Object.keys(top) : [];
-      results.push({ label, ok: true, keys, sample: top });
-    } catch (e: any) {
-      results.push({ label, ok: false, error: e?.message ?? String(e) });
+      await bp([{
+        _obj: "select",
+        _target: [{ _ref: "paintbrushTool" }],
+        _options: { dialogOptions: "dontDisplay" },
+      }]);
+    } catch { /* ignore */ }
+
+    const attempts: { label: string; cmd: any[] }[] = [
+      {
+        label: "property currentToolOptions of application",
+        cmd: [{
+          _obj: "get",
+          _target: [
+            { _ref: "property", _property: "currentToolOptions" },
+            { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
+          ],
+          _options: { dialogOptions: "dontDisplay" },
+        }],
+      },
+      {
+        label: "currentToolOptions targetEnum",
+        cmd: [{
+          _obj: "get",
+          _target: [{ _ref: "currentToolOptions", _enum: "ordinal", _value: "targetEnum" }],
+          _options: { dialogOptions: "dontDisplay" },
+        }],
+      },
+      {
+        label: "paintbrushTool targetEnum",
+        cmd: [{
+          _obj: "get",
+          _target: [{ _ref: "paintbrushTool", _enum: "ordinal", _value: "targetEnum" }],
+          _options: { dialogOptions: "dontDisplay" },
+        }],
+      },
+      {
+        label: "brush targetEnum",
+        cmd: [{
+          _obj: "get",
+          _target: [{ _ref: "brush", _enum: "ordinal", _value: "targetEnum" }],
+          _options: { dialogOptions: "dontDisplay" },
+        }],
+      },
+    ];
+
+    const results: { label: string; ok: boolean; keys?: string[]; sample?: any; error?: string }[] = [];
+    for (const { label, cmd } of attempts) {
+      try {
+        const r = await action.batchPlay(cmd, { synchronousExecution: true });
+        const top = r?.[0] ?? null;
+        const keys = top && typeof top === "object" ? Object.keys(top) : [];
+        results.push({ label, ok: true, keys, sample: top });
+      } catch (e: any) {
+        results.push({ label, ok: false, error: e?.message ?? String(e) });
+      }
     }
-  }
-  // Also dump to console so the full payload is inspectable in UDT's devtools.
-  // eslint-disable-next-line no-console
-  console.log("[BrushBuddy] currentToolOptions probes:", results);
-  // Return a compact summary for the on-panel log.
-  return results.map((r) => r.ok ? `✓ ${r.label}: keys=${(r.keys ?? []).slice(0, 12).join(",")}` : `✗ ${r.label}: ${r.error}`);
+    // eslint-disable-next-line no-console
+    console.log("[BrushBuddy] currentToolOptions probes:", JSON.stringify(results, null, 2));
+    // Stash the full payloads on a global so the panel can read + copy them.
+    (globalThis as any).__brushBuddyDumps = results;
+    return results.map((r) => r.ok ? `✓ ${r.label}: keys=${(r.keys ?? []).slice(0, 12).join(",")}` : `✗ ${r.label}: ${r.error}`);
+  });
+}
+
+/** Returns the most recent dump's full JSON, suitable for paste. */
+export function getLastDumpJson(): string {
+  const dumps = (globalThis as any).__brushBuddyDumps;
+  if (!dumps) return "(no dump yet — click 'debug: dump tool options' first)";
+  return JSON.stringify(dumps, null, 2);
 }
 
 // Combined "capture" — runs prep + define, but each step's failure is caught

@@ -15,6 +15,7 @@ import {
   cleanupVolatiles,
   debugListBrushes,
   debugDumpCurrentToolOptions,
+  getLastDumpJson,
   getLastDefinedBrushName,
 } from "../services/brush";
 
@@ -127,9 +128,27 @@ export function Panel() {
       </Section>
 
       <div style={{ marginTop: 16, borderTop: "1px solid #444", paddingTop: 8 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, gap: 6 }}>
           <span style={{ color: "#999" }}>Log</span>
-          <button onClick={() => setLog([])} style={{ ...btnStyle, fontSize: 10, padding: "2px 8px" }}>clear</button>
+          <div style={{ display: "flex", gap: 4 }}>
+            <button
+              onClick={async () => {
+                const text = log.map((e) => `[${e.ts}] ${e.level === "err" ? "ERR " : e.level === "ok" ? "OK  " : "    "}${e.text}`).join("\n");
+                try { await navigator.clipboard.writeText(text); append("ok", `📋 copied ${log.length} log lines (${text.length} chars)`); }
+                catch (e: any) { append("err", `clipboard failed: ${e?.message ?? e}`); }
+              }}
+              style={{ ...btnStyle, fontSize: 10, padding: "2px 8px" }}
+            >copy log</button>
+            <button
+              onClick={async () => {
+                const text = getLastDumpJson();
+                try { await navigator.clipboard.writeText(text); append("ok", `📋 copied dump JSON (${text.length} chars)`); }
+                catch (e: any) { append("err", `clipboard failed: ${e?.message ?? e}`); }
+              }}
+              style={{ ...btnStyle, fontSize: 10, padding: "2px 8px" }}
+            >copy dump JSON</button>
+            <button onClick={() => setLog([])} style={{ ...btnStyle, fontSize: 10, padding: "2px 8px" }}>clear</button>
+          </div>
         </div>
         <div style={{ maxHeight: 240, overflow: "auto", fontFamily: "monospace", fontSize: 11, background: "#1c1c1c", borderRadius: 4, padding: 6 }}>
           {log.length === 0 ? <div style={{ color: "#555" }}>(no events yet)</div> : log.map(e => (
