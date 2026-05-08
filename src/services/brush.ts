@@ -25,29 +25,49 @@ export async function prepDesaturate(): Promise<void> {
 
 export async function prepAutoLevels(): Promise<void> {
   await executeAsModal("BrushBuddy: auto-tone", async () => {
-    // PS records this differently across versions. Try the known names in order.
-    const ids = ["autoTone", "autoLevels", "autoContrast"];
-    const errors: string[] = [];
-    for (const id of ids) {
-      try {
-        await bp([{ _obj: id, _options: { dialogOptions: "dontDisplay" } }]);
-        return; // success
-      } catch (e: any) {
-        errors.push(`${id}: ${e?.message ?? String(e)}`);
-      }
-    }
-    throw new Error(`No known auto-tone event id worked. Tried:\n  ${errors.join("\n  ")}`);
+    // PS 2025 records "Image > Auto Tone" as `levels` with `auto: true`.
+    await bp([{ _obj: "levels", auto: true, _options: { dialogOptions: "dontDisplay" } }]);
   });
 }
 
-export async function defineBrushFromSelection(name: string = LIVE_PREVIEW_NAME): Promise<void> {
-  await executeAsModal("BrushBuddy: define brush", async () => {
+// State: PS may not honor our `name` parameter to defineBrush — when recorded
+// manually, brushes get default names like "Sampled Brush 1". After every
+// defineBrush we scan the brush list to discover the actual name PS assigned.
+let LAST_DEFINED_BRUSH_NAME: string | null = null;
+export function getLastDefinedBrushName(): string | null { return LAST_DEFINED_BRUSH_NAME; }
+
+export async function defineBrushFromSelection(name: string = LIVE_PREVIEW_NAME): Promise<string> {
+  return await executeAsModal("BrushBuddy: define brush", async () => {
     const doc = getActiveDoc();
     if (!doc.selection || !doc.selection.bounds) {
       throw new Error("Make a rectangular selection first.");
     }
+    // Snapshot brush list before, define, snapshot after, diff to find the new one.
+    const before = await listBrushNames();
     await bp([{ _obj: "defineBrush", name, _options: { dialogOptions: "dontDisplay" } }]);
+    const after = await listBrushNames();
+    const beforeSet = new Set(before);
+    const newOnes = after.filter((n) => !beforeSet.has(n));
+    // Prefer our requested name if PS honored it; otherwise take the new entry.
+    const actual = newOnes.find((n) => n === name) ?? newOnes[newOnes.length - 1] ?? after[after.length - 1] ?? name;
+    LAST_DEFINED_BRUSH_NAME = actual;
+    return actual;
   });
+}
+
+// List all brush preset names via batchPlay get-property.
+async function listBrushNames(): Promise<string[]> {
+  try {
+    const r = await bp([{
+      _obj: "get",
+      _target: [{ _ref: "property", _property: "brushes" }, { _ref: "application", _enum: "ordinal", _value: "targetEnum" }],
+      _options: { dialogOptions: "dontDisplay" },
+    }]);
+    const brushes = (r?.[0] as any)?.brushes ?? [];
+    return brushes.map((b: any) => b?.name).filter((n: any) => typeof n === "string");
+  } catch {
+    return [];
+  }
 }
 
 // Combined "capture" — runs prep + define, but each step's failure is caught
@@ -77,35 +97,22 @@ export async function selectBrushTool(): Promise<void> {
   });
 }
 
-export async function selectLivePreviewBrush(): Promise<void> {
-  await executeAsModal("BrushBuddy: select live preview", async () => {
-    // Brush tool first — required for any brush operation.
+export async function selectLivePreviewBrush(): Promise<string> {
+  return await executeAsModal("BrushBuddy: select live preview", async () => {
+    // Brush tool must be active first.
     await bp([{
       _obj: "select",
       _target: [{ _ref: "paintbrushTool" }],
       _options: { dialogOptions: "dontDisplay" },
     }]);
-    // Note: defineBrush already activates the new preset as the current brush,
-    // so this re-select is mostly a safety step. PS 2025 doesn't accept
-    // _ref: "brush" with _name; try a few alternatives and tolerate failure.
-    const attempts: any[][] = [
-      // Attempt A — by id property of presetManager (need preset index; skip).
-      // Attempt B — by name on toolPreset (works for tool presets, not brushes).
-      [{ _obj: "select", _target: [{ _ref: "toolPreset", _name: LIVE_PREVIEW_NAME }], _options: { dialogOptions: "dontDisplay" } }],
-      // Attempt C — set brush property of paintbrushTool.
-      [{
-        _obj: "set",
-        _target: [{ _ref: "paintbrushTool" }],
-        to: { _obj: "paintbrushTool", brush: { _ref: "brush", _name: LIVE_PREVIEW_NAME } },
-        _options: { dialogOptions: "dontDisplay" },
-      }],
-    ];
-    for (const cmd of attempts) {
-      try { await bp(cmd); return; } catch { /* try next */ }
-    }
-    // All attempts failed — but defineBrush usually leaves the new preset active,
-    // so this is non-fatal for the spike. Throw so the user sees it logged.
-    throw new Error("Could not explicitly re-select Live Preview by name. The brush should already be active from defineBrush — try the next button anyway.");
+    const target = LAST_DEFINED_BRUSH_NAME ?? LIVE_PREVIEW_NAME;
+    // Recorded form from PS 2025: select brush by ref+name.
+    await bp([{
+      _obj: "select",
+      _target: [{ _ref: "brush", _name: target }],
+      _options: { dialogOptions: "dontDisplay" },
+    }]);
+    return target;
   });
 }
 
