@@ -102,6 +102,73 @@ export async function debugListBrushes(): Promise<{ count: number; first10: stri
   return { count: names.length, first10: names.slice(0, 10), last10: names.slice(-10) };
 }
 
+/**
+ * Dump the current brush tool options. We try a handful of get-property
+ * shapes and return whichever one comes back with content. This is the
+ * authoritative descriptor shape we need to mirror in our `set` calls.
+ */
+export async function debugDumpCurrentToolOptions(): Promise<any> {
+  // Make sure the brush tool is active first.
+  await executeAsModal("BrushBuddy: ensure brush tool", async () => {
+    await bp([{
+      _obj: "select",
+      _target: [{ _ref: "paintbrushTool" }],
+      _options: { dialogOptions: "dontDisplay" },
+    }]);
+  });
+
+  const attempts: { label: string; cmd: any[] }[] = [
+    {
+      label: "property currentToolOptions of application",
+      cmd: [{
+        _obj: "get",
+        _target: [
+          { _ref: "property", _property: "currentToolOptions" },
+          { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
+        ],
+      }],
+    },
+    {
+      label: "currentToolOptions targetEnum",
+      cmd: [{
+        _obj: "get",
+        _target: [{ _ref: "currentToolOptions", _enum: "ordinal", _value: "targetEnum" }],
+      }],
+    },
+    {
+      label: "paintbrushTool targetEnum",
+      cmd: [{
+        _obj: "get",
+        _target: [{ _ref: "paintbrushTool", _enum: "ordinal", _value: "targetEnum" }],
+      }],
+    },
+    {
+      label: "brush targetEnum",
+      cmd: [{
+        _obj: "get",
+        _target: [{ _ref: "brush", _enum: "ordinal", _value: "targetEnum" }],
+      }],
+    },
+  ];
+
+  const results: { label: string; ok: boolean; keys?: string[]; sample?: any; error?: string }[] = [];
+  for (const { label, cmd } of attempts) {
+    try {
+      const r = await action.batchPlay(cmd, {});
+      const top = r?.[0] ?? null;
+      const keys = top && typeof top === "object" ? Object.keys(top) : [];
+      results.push({ label, ok: true, keys, sample: top });
+    } catch (e: any) {
+      results.push({ label, ok: false, error: e?.message ?? String(e) });
+    }
+  }
+  // Also dump to console so the full payload is inspectable in UDT's devtools.
+  // eslint-disable-next-line no-console
+  console.log("[BrushBuddy] currentToolOptions probes:", results);
+  // Return a compact summary for the on-panel log.
+  return results.map((r) => r.ok ? `✓ ${r.label}: keys=${(r.keys ?? []).slice(0, 12).join(",")}` : `✗ ${r.label}: ${r.error}`);
+}
+
 // Combined "capture" — runs prep + define, but each step's failure is caught
 // individually and reported instead of stopping the whole flow.
 export async function captureTipFromSelection(name: string = LIVE_PREVIEW_NAME): Promise<{

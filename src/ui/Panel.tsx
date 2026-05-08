@@ -14,6 +14,7 @@ import {
   loopTest,
   cleanupVolatiles,
   debugListBrushes,
+  debugDumpCurrentToolOptions,
   getLastDefinedBrushName,
 } from "../services/brush";
 
@@ -72,6 +73,7 @@ export function Panel() {
         <Btn disabled={busy} onClick={() => run("select Live Preview", () => selectLivePreviewBrush())}>Live Preview preset</Btn>
         <Btn disabled={busy} onClick={() => run("debug: list brushes", () => debugListBrushes())}>debug: list brushes</Btn>
         <Btn disabled={busy} onClick={() => run("debug: last name", async () => ({ lastDefined: getLastDefinedBrushName() }))}>debug: last name</Btn>
+        <Btn disabled={busy} onClick={() => run("debug: dump tool options", () => debugDumpCurrentToolOptions())}>debug: dump tool options</Btn>
       </Section>
 
       <Section label="2. Apply dynamics (bisect)">
