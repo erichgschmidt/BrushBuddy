@@ -1,6 +1,11 @@
 import { useState, useCallback } from "react";
 import {
   captureTipFromSelection,
+  defineBrushFromSelection,
+  prepDesaturate,
+  prepAutoLevels,
+  selectBrushTool,
+  selectLivePreviewBrush,
   applyStippleDynamics,
   applyDualBrush,
   renderProofStroke,
@@ -46,10 +51,21 @@ export function Panel() {
         contrast, then run the buttons in order.
       </div>
 
-      <Section label="1. Capture tip">
-        <Btn disabled={busy} onClick={() => run("capture", () => captureTipFromSelection())}>
-          Capture tip from selection
+      <Section label="1. Capture tip (combined)">
+        <Btn disabled={busy} onClick={() => run("capture (all 3 steps)", () => captureTipFromSelection())}>
+          Capture (desat → autolvls → define)
         </Btn>
+      </Section>
+
+      <Section label="1b. Capture steps (isolate failures)">
+        <Btn disabled={busy} onClick={() => run("desaturate", () => prepDesaturate())}>desaturate</Btn>
+        <Btn disabled={busy} onClick={() => run("autoLevels", () => prepAutoLevels())}>autoLevels</Btn>
+        <Btn disabled={busy} onClick={() => run("defineBrush only", () => defineBrushFromSelection())}>defineBrush only</Btn>
+      </Section>
+
+      <Section label="1c. Select brush">
+        <Btn disabled={busy} onClick={() => run("select brush tool", () => selectBrushTool())}>brush tool</Btn>
+        <Btn disabled={busy} onClick={() => run("select Live Preview", () => selectLivePreviewBrush())}>Live Preview preset</Btn>
       </Section>
 
       <Section label="2. Apply dynamics">

@@ -1,10 +1,8 @@
 // Brush-specific batchPlay operations for the M0 spike.
 //
-// These descriptors are first-pass guesses based on community knowledge of how
-// Photoshop records brush actions. The whole point of the spike is to validate
-// (or correct) them against PS 2025+. Use PS's `Plugins > Development > Record
-// Action Commands` or the Alchemist plugin to capture authoritative descriptors
-// when a recipe doesn't round-trip.
+// Descriptors are first-pass guesses; the spike's purpose is to find which
+// ones don't round-trip on PS 2025+ and correct them via PS's
+// `Plugins > Development > Record Action Commands` (or the Alchemist plugin).
 //
 // Naming convention: every volatile artifact is namespaced "BrushBuddy ..." so
 // we can find and prune them on session end.
@@ -15,128 +13,145 @@ export const LIVE_PREVIEW_NAME = "BrushBuddy Live Preview";
 export const PROOF_LAYER_NAME = "BrushBuddy Proof";
 
 // ---------------------------------------------------------------------------
-// 1. Capture tip from current selection.
-//    Pipeline: ensure selection exists → desaturate active layer → auto-levels
-//    → define brush preset with the given name (overwriting if it exists).
+// Building blocks (each step is a separate button so we can isolate failures).
 // ---------------------------------------------------------------------------
-export async function captureTipFromSelection(name: string = LIVE_PREVIEW_NAME): Promise<void> {
-  await executeAsModal("BrushBuddy: capture tip", async () => {
-    // Sanity: confirm there's a selection. PS will refuse defineBrush otherwise.
+
+export async function prepDesaturate(): Promise<void> {
+  await executeAsModal("BrushBuddy: desaturate", async () => {
+    // Image > Adjustments > Desaturate. Recorded event id: "desaturate".
+    await bp([{ _obj: "desaturate", _options: { dialogOptions: "dontDisplay" } }]);
+  });
+}
+
+export async function prepAutoLevels(): Promise<void> {
+  await executeAsModal("BrushBuddy: auto-levels", async () => {
+    // Image > Auto Tone (sometimes recorded as "autoLevels", sometimes "autoTone").
+    // Try autoLevels first; if that's the rejected one, swap to autoTone.
+    await bp([{ _obj: "autoLevels", _options: { dialogOptions: "dontDisplay" } }]);
+  });
+}
+
+export async function defineBrushFromSelection(name: string = LIVE_PREVIEW_NAME): Promise<void> {
+  await executeAsModal("BrushBuddy: define brush", async () => {
     const doc = getActiveDoc();
     if (!doc.selection || !doc.selection.bounds) {
       throw new Error("Make a rectangular selection first.");
     }
+    await bp([{ _obj: "defineBrush", name, _options: { dialogOptions: "dontDisplay" } }]);
+  });
+}
 
-    // Step 1 — desaturate (Image > Adjustments > Desaturate). Affects the
-    // active layer; the spike assumes the user is on a flat or simple layer.
-    await bp([
-      { _obj: "desaturate", _options: { dialogOptions: "dontDisplay" } },
-    ]);
+// Combined "capture" — runs prep + define, but each step's failure is caught
+// individually and reported instead of stopping the whole flow.
+export async function captureTipFromSelection(name: string = LIVE_PREVIEW_NAME): Promise<{
+  desaturate: "ok" | string;
+  autoLevels: "ok" | string;
+  defineBrush: "ok" | string;
+}> {
+  const result = { desaturate: "ok" as "ok" | string, autoLevels: "ok" as "ok" | string, defineBrush: "ok" as "ok" | string };
+  try { await prepDesaturate(); } catch (e: any) { result.desaturate = e?.message ?? String(e); }
+  try { await prepAutoLevels(); } catch (e: any) { result.autoLevels = e?.message ?? String(e); }
+  try { await defineBrushFromSelection(name); } catch (e: any) { result.defineBrush = e?.message ?? String(e); }
+  return result;
+}
 
-    // Step 2 — auto-levels stretch.
-    await bp([
-      { _obj: "autoLevels", _options: { dialogOptions: "dontDisplay" } },
-    ]);
+// ---------------------------------------------------------------------------
+// Select the brush tool + the named preset.
+// ---------------------------------------------------------------------------
+export async function selectBrushTool(): Promise<void> {
+  await executeAsModal("BrushBuddy: select brush tool", async () => {
+    await bp([{
+      _obj: "select",
+      _target: [{ _ref: "paintbrushTool" }],
+      _options: { dialogOptions: "dontDisplay" },
+    }]);
+  });
+}
 
-    // Step 3 — define brush preset. The "defineBrush" event accepts a `name`
-    // string; passing an existing preset name overwrites in place (this is
-    // exactly what we need for the dummy-brush loop, and is one of the things
-    // the spike must verify).
-    await bp([
-      {
-        _obj: "defineBrush",
-        name,
-        _options: { dialogOptions: "dontDisplay" },
-      },
-    ]);
+export async function selectLivePreviewBrush(): Promise<void> {
+  await executeAsModal("BrushBuddy: select live preview", async () => {
+    // First make sure we're on the brush tool.
+    await bp([{
+      _obj: "select",
+      _target: [{ _ref: "paintbrushTool" }],
+      _options: { dialogOptions: "dontDisplay" },
+    }]);
+    // Then select the named brush preset.
+    await bp([{
+      _obj: "select",
+      _target: [{ _ref: "brush", _name: LIVE_PREVIEW_NAME }],
+      _options: { dialogOptions: "dontDisplay" },
+    }]);
   });
 }
 
 // ---------------------------------------------------------------------------
-// 2. Apply primary dynamics.
-//    Recipe: Stipple-ish — visible stamps, scattered, jittered size.
-//    Sets the *current brush* settings; the brush must be selected first.
+// Apply primary dynamics (Stipple-ish recipe).
+// Sets the *current brush preset's* settings via currentToolOptions.
 // ---------------------------------------------------------------------------
 export async function applyStippleDynamics(): Promise<void> {
   await executeAsModal("BrushBuddy: apply dynamics", async () => {
-    await bp([
-      {
-        _obj: "set",
-        _target: [{ _ref: "currentToolOptions" }],
-        to: {
-          _obj: "currentToolOptions",
-          // Brush tip shape
-          spacing: { _unit: "percentUnit", _value: 180 },
-          // Shape Dynamics
-          shapeDynamics: {
-            _obj: "shapeDynamics",
-            useTipDynamics: true,
-            sizeDynamics: 25,
-            minimumDiameter: { _unit: "percentUnit", _value: 30 },
-            angleDynamics: 0,
-            roundnessDynamics: 0,
-          },
-          // Scattering
-          scatter: {
-            _obj: "scatter",
-            useScatter: true,
-            bothAxes: true,
-            scatterDynamics: 60,
-            count: 1,
-            countDynamics: 40,
-          },
-          // Transfer
-          transfer: {
-            _obj: "transfer",
-            useTransfer: true,
-            opacityDynamics: 30,
-            minimumOpacity: 30,
-          },
+    await bp([{
+      _obj: "set",
+      _target: [{ _ref: "currentToolOptions" }],
+      to: {
+        _obj: "currentToolOptions",
+        spacing: { _unit: "percentUnit", _value: 180 },
+        shapeDynamics: {
+          _obj: "shapeDynamics",
+          useTipDynamics: true,
+          sizeDynamics: 25,
+          minimumDiameter: { _unit: "percentUnit", _value: 30 },
+          angleDynamics: 0,
+          roundnessDynamics: 0,
         },
-        _options: { dialogOptions: "dontDisplay" },
+        scatter: {
+          _obj: "scatter",
+          useScatter: true,
+          bothAxes: true,
+          scatterDynamics: 60,
+          count: 1,
+          countDynamics: 40,
+        },
+        transfer: {
+          _obj: "transfer",
+          useTransfer: true,
+          opacityDynamics: 30,
+          minimumOpacity: 30,
+        },
       },
-    ]);
+      _options: { dialogOptions: "dontDisplay" },
+    }]);
   });
 }
 
 // ---------------------------------------------------------------------------
-// 3. Apply Dual Brush.
-//    The riskiest descriptor in the spike. Sub-descriptor naming for the
-//    secondary tip varies across PS versions; capture from PS's recorder if
-//    this fails.
+// Apply Dual Brush — the riskiest descriptor in the spike.
 // ---------------------------------------------------------------------------
 export async function applyDualBrush(): Promise<void> {
   await executeAsModal("BrushBuddy: apply dual brush", async () => {
-    await bp([
-      {
-        _obj: "set",
-        _target: [{ _ref: "currentToolOptions" }],
-        to: {
-          _obj: "currentToolOptions",
-          dualBrush: {
-            _obj: "dualBrush",
-            useDualBrush: true,
-            blendMode: { _enum: "blendMode", _value: "multiply" },
-            spacing: { _unit: "percentUnit", _value: 25 },
-            scatter: 50,
-            count: 2,
-            // Note: choosing a *secondary tip* by name requires another set
-            // call; the spike just turns Dual Brush on with default tip and
-            // verifies the descriptor round-trips at all.
-          },
+    await bp([{
+      _obj: "set",
+      _target: [{ _ref: "currentToolOptions" }],
+      to: {
+        _obj: "currentToolOptions",
+        dualBrush: {
+          _obj: "dualBrush",
+          useDualBrush: true,
+          blendMode: { _enum: "blendMode", _value: "multiply" },
+          spacing: { _unit: "percentUnit", _value: 25 },
+          scatter: 50,
+          count: 2,
         },
-        _options: { dialogOptions: "dontDisplay" },
       },
-    ]);
+      _options: { dialogOptions: "dontDisplay" },
+    }]);
   });
 }
 
 // ---------------------------------------------------------------------------
-// 4. Render proof stroke.
-//    Strategy: ensure a "BrushBuddy Proof" layer exists, target it, then ask
-//    PS to paint a straight horizontal line using the current brush. We do
-//    this with the "stroke" command on a temporary work path — turns out to
-//    be the cleanest way to drive the brush engine programmatically.
+// Render proof stroke: ensure a "BrushBuddy Proof" layer, make a horizontal
+// work path, stroke with current brush, delete the path.
 // ---------------------------------------------------------------------------
 export async function renderProofStroke(): Promise<void> {
   await executeAsModal("BrushBuddy: proof stroke", async () => {
@@ -144,37 +159,28 @@ export async function renderProofStroke(): Promise<void> {
     const w = doc.width;
     const h = doc.height;
 
-    // Step A — find or create the proof layer.
-    let proofLayer = doc.layers.find((l: any) => l.name === PROOF_LAYER_NAME);
+    const proofLayer = doc.layers.find((l: any) => l.name === PROOF_LAYER_NAME);
     if (!proofLayer) {
-      await bp([
-        {
-          _obj: "make",
-          _target: [{ _ref: "layer" }],
-          using: { _obj: "layer", name: PROOF_LAYER_NAME },
-          _options: { dialogOptions: "dontDisplay" },
-        },
-      ]);
+      await bp([{
+        _obj: "make",
+        _target: [{ _ref: "layer" }],
+        using: { _obj: "layer", name: PROOF_LAYER_NAME },
+        _options: { dialogOptions: "dontDisplay" },
+      }]);
     } else {
-      // Select it.
-      await bp([
-        {
-          _obj: "select",
-          _target: [{ _ref: "layer", _name: PROOF_LAYER_NAME }],
-          makeVisible: true,
-          _options: { dialogOptions: "dontDisplay" },
-        },
-      ]);
+      await bp([{
+        _obj: "select",
+        _target: [{ _ref: "layer", _name: PROOF_LAYER_NAME }],
+        makeVisible: true,
+        _options: { dialogOptions: "dontDisplay" },
+      }]);
     }
 
-    // Step B — define a horizontal line as a work path, then stroke it with
-    // the current brush. This is the standard "scripted brush stroke" trick.
     const y = h * 0.5;
     const x0 = w * 0.1;
     const x1 = w * 0.9;
 
     await bp([
-      // Make a work path from a line.
       {
         _obj: "make",
         _target: [{ _ref: "path" }],
@@ -195,14 +201,12 @@ export async function renderProofStroke(): Promise<void> {
         },
         _options: { dialogOptions: "dontDisplay" },
       },
-      // Stroke the path with the current brush tool.
       {
         _obj: "stroke",
         _target: [{ _ref: "path", _enum: "ordinal", _value: "targetEnum" }],
         using: { _enum: "strokeToolType", _value: "brushTool" },
         _options: { dialogOptions: "dontDisplay" },
       },
-      // Delete the work path so the user's doc isn't polluted.
       {
         _obj: "delete",
         _target: [{ _ref: "path", _enum: "ordinal", _value: "targetEnum" }],
@@ -213,10 +217,7 @@ export async function renderProofStroke(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Loop test.
-//    Runs the full pipeline N times and reports per-cycle wall time. Used to
-//    measure whether the dummy-brush update loop fits within our < 600 ms
-//    budget for debounced auto-update.
+// Loop test — define + dynamics + proof stroke in a tight loop.
 // ---------------------------------------------------------------------------
 export interface LoopResult { cycles: number; samplesMs: number[]; medianMs: number; p95Ms: number; }
 
@@ -224,7 +225,8 @@ export async function loopTest(cycles: number = 10): Promise<LoopResult> {
   const samples: number[] = [];
   for (let i = 0; i < cycles; i++) {
     const t0 = performance.now();
-    await captureTipFromSelection();
+    await defineBrushFromSelection();
+    await selectLivePreviewBrush();
     await applyStippleDynamics();
     await renderProofStroke();
     samples.push(performance.now() - t0);
@@ -236,24 +238,18 @@ export async function loopTest(cycles: number = 10): Promise<LoopResult> {
 }
 
 // ---------------------------------------------------------------------------
-// Cleanup — prune volatile artifacts. Call on session end (or a button).
+// Cleanup volatile artifacts.
 // ---------------------------------------------------------------------------
 export async function cleanupVolatiles(): Promise<void> {
   await executeAsModal("BrushBuddy: cleanup", async () => {
-    // Try to delete the proof layer if present.
     try {
-      await bp([
-        {
-          _obj: "delete",
-          _target: [{ _ref: "layer", _name: PROOF_LAYER_NAME }],
-          _options: { dialogOptions: "dontDisplay" },
-        },
-      ]);
+      await bp([{
+        _obj: "delete",
+        _target: [{ _ref: "layer", _name: PROOF_LAYER_NAME }],
+        _options: { dialogOptions: "dontDisplay" },
+      }]);
     } catch {
-      // It may not exist — that's fine.
+      /* layer may not exist */
     }
-    // The Live Preview brush preset is more involved to delete via batchPlay
-    // and isn't strictly necessary; leave it for the user to remove or for a
-    // future "manage previews" UI. Document this in the spike report.
   });
 }
