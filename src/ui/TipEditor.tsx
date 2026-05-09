@@ -9,6 +9,7 @@ import {
   runStackMemoized, setSource, toggleOp, updateOpParams, moveOp,
 } from "../tip/opstack";
 import { commitTipAsBrush } from "../tip/commit";
+import { probeStamp } from "../tip/stampProbe";
 import { pixelBufferToObjectUrl } from "../tip/png";
 import type { PixelBuffer } from "../tip/types";
 
@@ -88,6 +89,25 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
         <button onClick={() => onIngest("layer")}     disabled={busy} style={smBtn}>from layer</button>
         <button onClick={() => onIngest("file")}      disabled={busy} style={smBtn}>from file…</button>
       </div>
+      <button
+        onClick={async () => {
+          setBusy(true); setStatus({ text: "probing stamp events…", kind: "info" });
+          try {
+            const r = await probeStamp();
+            const winners = r.filter((x) => x.ok).map((x) => x.label);
+            setStatus({
+              text: winners.length
+                ? `stamp probe: WINNERS = ${winners.join(", ")} — see devtools console for full results`
+                : `stamp probe: no event accepted (${r.length} tried). Console has details.`,
+              kind: winners.length ? "ok" : "err",
+            });
+          } catch (e: any) { setStatus({ text: e?.message ?? String(e), kind: "err" }); }
+          finally { setBusy(false); }
+        }}
+        disabled={busy}
+        style={{ ...smBtn, fontSize: 10, opacity: 0.7 }}
+        title="Spike: see if PS will accept a programmatic single brush dab. Required to extract tip pixels from arbitrary brushes."
+      >debug: probe stamp events</button>
       <button onClick={onCommit} disabled={busy || !preview} style={primaryBtn}>Commit as brush</button>
 
       <div style={{
