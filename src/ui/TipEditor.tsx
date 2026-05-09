@@ -109,7 +109,7 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
         <select value={addPick} onChange={(e) => setAddPick(e.target.value as OpKind)} style={select} disabled={!state.source}>
           {OP_KINDS.map((k) => <option key={k} value={k}>{opMeta(k).label}</option>)}
         </select>
-        <button onClick={onAdd} disabled={busy || !state.source} style={btn}>+ add</button>
+        <button onClick={onAdd} disabled={busy || !state.source} style={smBtn}>+ add</button>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
