@@ -507,39 +507,75 @@ export async function renderProofStroke(): Promise<void> {
     const x0 = w * 0.1;
     const x1 = w * 0.9;
 
-    await bp([
-      {
-        _obj: "make",
-        _target: [{ _ref: "path" }],
-        using: {
-          _obj: "pathClass",
-          pathComponents: [{
-            _obj: "pathComponent",
-            shapeOperation: { _enum: "shapeOperation", _value: "xor" },
-            subpathListKey: [{
-              _obj: "subpathList",
-              closedSubpath: false,
-              points: [
-                { _obj: "pathPoint", anchor: { _obj: "paint", horizontal: { _unit: "pixelsUnit", _value: x0 }, vertical: { _unit: "pixelsUnit", _value: y } } },
-                { _obj: "pathPoint", anchor: { _obj: "paint", horizontal: { _unit: "pixelsUnit", _value: x1 }, vertical: { _unit: "pixelsUnit", _value: y } } },
-              ],
-            }],
+    // Step 1 — make the work path. Recorded form uses "workPath" as the
+    // path name when you create one via Path > Make Work Path.
+    await bp([{
+      _obj: "make",
+      _target: [{ _ref: "path" }],
+      using: {
+        _obj: "pathClass",
+        pathComponents: [{
+          _obj: "pathComponent",
+          shapeOperation: { _enum: "shapeOperation", _value: "xor" },
+          subpathListKey: [{
+            _obj: "subpathList",
+            closedSubpath: false,
+            points: [
+              { _obj: "pathPoint", anchor: { _obj: "paint", horizontal: { _unit: "pixelsUnit", _value: x0 }, vertical: { _unit: "pixelsUnit", _value: y } } },
+              { _obj: "pathPoint", anchor: { _obj: "paint", horizontal: { _unit: "pixelsUnit", _value: x1 }, vertical: { _unit: "pixelsUnit", _value: y } } },
+            ],
           }],
-        },
-        _options: { dialogOptions: "dontDisplay" },
+        }],
       },
-      {
+      _options: { dialogOptions: "dontDisplay" },
+    }]);
+
+    // Step 2 — explicitly select the path. Without this, "stroke" complains
+    // it's "not currently available" because no path is the active target.
+    try {
+      await bp([{
+        _obj: "select",
+        _target: [{ _ref: "path", _name: "Work Path" }],
+        _options: { dialogOptions: "dontDisplay" },
+      }]);
+    } catch { /* if rename happens it's fine, targetEnum still resolves */ }
+
+    // Step 3 — stroke. Try the modern form first, fall back to the legacy.
+    const strokeAttempts: any[][] = [
+      [{
+        _obj: "stroke",
+        _target: [{ _ref: "path", _enum: "ordinal", _value: "targetEnum" }],
+        using: { _enum: "type", _value: "brushTool" },
+        _options: { dialogOptions: "dontDisplay" },
+      }],
+      [{
         _obj: "stroke",
         _target: [{ _ref: "path", _enum: "ordinal", _value: "targetEnum" }],
         using: { _enum: "strokeToolType", _value: "brushTool" },
         _options: { dialogOptions: "dontDisplay" },
-      },
-      {
+      }],
+      [{
+        _obj: "stroke",
+        _target: [{ _ref: "path", _name: "Work Path" }],
+        using: { _enum: "type", _value: "brushTool" },
+        _options: { dialogOptions: "dontDisplay" },
+      }],
+    ];
+    let strokeErr: any = null;
+    for (const cmd of strokeAttempts) {
+      try { await bp(cmd); strokeErr = null; break; }
+      catch (e) { strokeErr = e; }
+    }
+    if (strokeErr) throw strokeErr;
+
+    // Step 4 — clean up the work path.
+    try {
+      await bp([{
         _obj: "delete",
         _target: [{ _ref: "path", _enum: "ordinal", _value: "targetEnum" }],
         _options: { dialogOptions: "dontDisplay" },
-      },
-    ]);
+      }]);
+    } catch { /* path may already be gone */ }
   });
 }
 
