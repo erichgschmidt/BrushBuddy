@@ -157,7 +157,7 @@ export async function debugSetProbe(): Promise<any[]> {
     const brushName = current?.brush?.name ?? LAST_DEFINED_BRUSH_NAME ?? "Sampled Brush 1";
     const fullBrush = current?.brush ?? null; // sampledBrush sub-descriptor
 
-    const attempts: { label: string; cmd: any[] }[] = [
+    const attempts: { label: string; cmd: any[]; opts?: any }[] = [
       // A. Property-chain: set "spacing" property of currentToolOptions of application.
       {
         label: "A: property spacing of currentToolOptions",
@@ -169,6 +169,51 @@ export async function debugSetProbe(): Promise<any[]> {
             { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
           ],
           to: { _unit: "percentUnit", _value: 180 },
+          _options: { dialogOptions: "dontDisplay" },
+        }],
+      },
+      // F. Same as A but with synchronousExecution.
+      {
+        label: "F: A + synchronousExecution",
+        cmd: [{
+          _obj: "set",
+          _target: [
+            { _ref: "property", _property: "spacing" },
+            { _ref: "property", _property: "currentToolOptions" },
+            { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
+          ],
+          to: { _unit: "percentUnit", _value: 180 },
+          _options: { dialogOptions: "dontDisplay" },
+        }],
+        opts: { synchronousExecution: true },
+      },
+      // G. Legacy "setd" event id (ScriptingListener used setd, UXP may also accept it).
+      {
+        label: "G: legacy setd event",
+        cmd: [{
+          _obj: "setd",
+          _target: [
+            { _ref: "property", _property: "spacing" },
+            { _ref: "property", _property: "currentToolOptions" },
+            { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
+          ],
+          to: { _unit: "percentUnit", _value: 180 },
+          _options: { dialogOptions: "dontDisplay" },
+        }],
+      },
+      // H. invokeCommand 1436 (captured from a previous user recording).
+      {
+        label: "H: invokeCommand 1436",
+        cmd: [{ _obj: "invokeCommand", commandID: 1436, _options: { dialogOptions: "dontDisplay" } }],
+      },
+      // I. Set on the brush with a sampledBrush descriptor that includes spacing.
+      //    Different from B in that we don't merge the existing fields — pure replace.
+      {
+        label: "I: set brush targetEnum to minimal sampledBrush",
+        cmd: [{
+          _obj: "set",
+          _target: [{ _ref: "brush", _enum: "ordinal", _value: "targetEnum" }],
+          to: { _obj: "sampledBrush", spacing: { _unit: "percentUnit", _value: 180 } },
           _options: { dialogOptions: "dontDisplay" },
         }],
       },
@@ -225,10 +270,10 @@ export async function debugSetProbe(): Promise<any[]> {
     ];
 
     const results: { label: string; ok: boolean; error?: string }[] = [];
-    for (const { label, cmd } of attempts) {
+    for (const { label, cmd, opts } of attempts) {
       if (!cmd.length) { results.push({ label, ok: false, error: "skipped (no precondition)" }); continue; }
       try {
-        await bp(cmd);
+        await bp(cmd, opts ?? {});
         results.push({ label, ok: true });
       } catch (e: any) {
         results.push({ label, ok: false, error: e?.message ?? String(e) });
