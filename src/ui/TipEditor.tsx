@@ -14,6 +14,9 @@ import { pixelBufferToObjectUrl } from "../tip/png";
 import {
   generatePerlin, generateWorley, generateVoronoi, generateCanvasWeave,
 } from "../tip/generators";
+import { VECTOR_PRESETS, PRESET_NAMES, rasterizeShape, type VectorShape } from "../tip/vector";
+import { compose, diverge, settle, DEFAULT_VARIATION, type LayoutKind } from "../tip/composer";
+import { gaussianBlur, autoCrop, threshold } from "../tip/processing";
 import type { PixelBuffer } from "../tip/types";
 
 type GeneratorKind = "perlin" | "worley" | "voronoi" | "canvas";
@@ -81,6 +84,22 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
     kind: "perlin", size: 256, scale: 32, detail: 4, variant: 50, seed: 1,
   });
   const [showGen, setShowGen] = useState(false);
+  const [showVec, setShowVec] = useState(false);
+  const [showComp, setShowComp] = useState(false);
+  const [vecPreset, setVecPreset] = useState<string>("circle");
+  const [vecSize, setVecSize] = useState(256);
+  const [comp, setComp] = useState<{
+    layout: LayoutKind;
+    count: number;
+    posJit: number;
+    scaleMin: number;
+    scaleMax: number;
+    rotJit: number;
+    follow: boolean;
+    pathPreset: string;
+    seed: number;
+  }>({ layout: "scatter", count: 16, posJit: 0, scaleMin: 0.6, scaleMax: 1.0, rotJit: 90, follow: false, pathPreset: "circle", seed: 1 });
+  const [history, setHistory] = useState<PixelBuffer[]>([]);
 
   // Compute the final preview buffer (memoized inside opstack).
   const preview = useMemo<PixelBuffer | null>(() => {
@@ -129,6 +148,82 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
     } finally { setBusy(false); }
   }
 
+  function pushHistory(buf: PixelBuffer) {
+    setHistory((h) => [...h, buf].slice(-8));
+  }
+
+  function setSourceTracked(buf: PixelBuffer, label: string) {
+    const cur = state.source;
+    if (cur) pushHistory(cur);
+    setState((s) => setSource(s, buf));
+    setStatus({ text: label, kind: "ok" });
+  }
+
+  function onUseVector() {
+    const shape: VectorShape = VECTOR_PRESETS[vecPreset];
+    const buf = rasterizeShape(shape, vecSize, vecSize);
+    setSourceTracked(buf, `vector → ${vecPreset} ${vecSize}×${vecSize}`);
+  }
+
+  function getCanvasSize(): number {
+    if (state.source) return Math.max(state.source.width, state.source.height);
+    return 256;
+  }
+
+  function onStamp() {
+    if (!state.source) { setStatus({ text: "no source — pick one first", kind: "err" }); return; }
+    const size = getCanvasSize();
+    try {
+      const out = compose(state.source, {
+        width: size, height: size,
+        layout: comp.layout,
+        count: comp.count,
+        seed: comp.seed,
+        variation: {
+          ...DEFAULT_VARIATION,
+          positionJitterPx: comp.posJit,
+          scaleMin: comp.scaleMin, scaleMax: comp.scaleMax,
+          rotationJitterDeg: comp.rotJit,
+          rotationFollowTangent: comp.follow,
+        },
+        vectorShape: comp.layout === "vectorPath" ? VECTOR_PRESETS[comp.pathPreset] : null,
+        lineFrom: { x: 0.1, y: 0.5 }, lineTo: { x: 0.9, y: 0.5 },
+        blend: "max",
+      });
+      pushHistory(state.source);
+      setState((s) => setSource(s, out));
+      setStatus({ text: `stamped ×${comp.count} via ${comp.layout}`, kind: "ok" });
+    } catch (e: any) { setStatus({ text: e?.message ?? String(e), kind: "err" }); }
+  }
+
+  function onDiverge() {
+    if (!state.source) return;
+    const out = diverge(state.source, { seed: comp.seed });
+    pushHistory(state.source);
+    setState((s) => setSource(s, out));
+    setStatus({ text: "diverged", kind: "ok" });
+  }
+
+  function onSettle() {
+    if (!state.source) return;
+    let out = settle(state.source, { seed: comp.seed });
+    out = gaussianBlur(out, { radiusPx: 2 });
+    out = threshold(out, { value: 96, soft: 8 });
+    out = autoCrop(out, { paddingPx: 4 });
+    pushHistory(state.source);
+    setState((s) => setSource(s, out));
+    setStatus({ text: "settled", kind: "ok" });
+  }
+
+  function onStepBack() {
+    setHistory((h) => {
+      if (h.length === 0) return h;
+      const prev = h[h.length - 1];
+      setState((s) => setSource(s, prev));
+      return h.slice(0, -1);
+    });
+  }
+
   function onAdd() {
     const op: Omit<Op, "id"> = { kind: addPick, enabled: true, params: defaultParamsFor(addPick) };
     setState((s) => addOp(s, op));
@@ -143,7 +238,38 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
         <button onClick={() => setShowGen((v) => !v)} disabled={busy} style={smBtn}>
           {showGen ? "▼ generate" : "▶ generate"}
         </button>
+        <button onClick={() => setShowVec((v) => !v)} disabled={busy} style={smBtn}>
+          {showVec ? "▼ vector" : "▶ vector"}
+        </button>
       </div>
+
+      {showVec && (
+        <div style={{ background: "#1c1c1c", border: "1px solid #3a3a3a", borderRadius: 4, padding: 6, display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {PRESET_NAMES.map((name) => (
+              <button
+                key={name}
+                onClick={() => setVecPreset(name)}
+                style={{
+                  ...smBtn,
+                  flex: "0 0 auto",
+                  background: vecPreset === name ? "#1473e6" : "#3a3a3a",
+                  border: vecPreset === name ? "1px solid #1473e6" : "1px solid #555",
+                }}
+              >{name}</button>
+            ))}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 4, alignItems: "center", fontSize: 11 }}>
+            <span style={{ color: "#888" }}>size</span>
+            <input type="range" min={32} max={1024} step={16} value={vecSize}
+                   onChange={(e) => setVecSize(Number(e.target.value))} />
+            <span style={{ color: "#bbb", width: 36, textAlign: "right" }}>{vecSize}</span>
+          </div>
+          <button onClick={onUseVector} style={{ ...smBtn, background: "#1473e6", color: "white", border: "1px solid #1473e6" }}>
+            Rasterize as source
+          </button>
+        </div>
+      )}
 
       {showGen && (
         <div style={{ background: "#1c1c1c", border: "1px solid #3a3a3a", borderRadius: 4, padding: 6, display: "flex", flexDirection: "column", gap: 6 }}>
@@ -249,6 +375,99 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
         </div>
       )}
 
+      <button onClick={() => setShowComp((v) => !v)} disabled={busy} style={smBtn}>
+        {showComp ? "▼ Composer (feedback loop)" : "▶ Composer (feedback loop)"}
+      </button>
+
+      {showComp && (
+        <div style={{ background: "#1c1c1c", border: "1px solid #3a3a3a", borderRadius: 4, padding: 6, display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ display: "flex", gap: 4 }}>
+            {(["scatter", "grid", "line", "vectorPath"] as LayoutKind[]).map((k) => (
+              <button
+                key={k}
+                onClick={() => setComp((c) => ({ ...c, layout: k }))}
+                style={{
+                  ...smBtn,
+                  background: comp.layout === k ? "#1473e6" : "#3a3a3a",
+                  border: comp.layout === k ? "1px solid #1473e6" : "1px solid #555",
+                }}
+              >{k}</button>
+            ))}
+          </div>
+          {comp.layout === "vectorPath" && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
+              {PRESET_NAMES.map((name) => (
+                <button
+                  key={name}
+                  onClick={() => setComp((c) => ({ ...c, pathPreset: name }))}
+                  style={{
+                    ...smBtn,
+                    flex: "0 0 auto",
+                    fontSize: 10, padding: "3px 6px",
+                    background: comp.pathPreset === name ? "#1473e6" : "#3a3a3a",
+                    border: comp.pathPreset === name ? "1px solid #1473e6" : "1px solid #555",
+                  }}
+                >{name}</button>
+              ))}
+            </div>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 4, alignItems: "center", fontSize: 11 }}>
+            <span style={{ color: "#888" }}>count</span>
+            <input type="range" min={1} max={64} value={comp.count}
+                   onChange={(e) => setComp((c) => ({ ...c, count: Number(e.target.value) }))} />
+            <span style={{ color: "#bbb", width: 36, textAlign: "right" }}>{comp.count}</span>
+
+            <span style={{ color: "#888" }}>pos jit</span>
+            <input type="range" min={0} max={200} value={comp.posJit}
+                   onChange={(e) => setComp((c) => ({ ...c, posJit: Number(e.target.value) }))} />
+            <span style={{ color: "#bbb", width: 36, textAlign: "right" }}>{comp.posJit}</span>
+
+            <span style={{ color: "#888" }}>scale</span>
+            <input type="range" min={5} max={200} value={Math.round(comp.scaleMin * 100)}
+                   onChange={(e) => setComp((c) => ({ ...c, scaleMin: Number(e.target.value) / 100 }))} />
+            <span style={{ color: "#bbb", width: 36, textAlign: "right" }}>{Math.round(comp.scaleMin * 100)}–{Math.round(comp.scaleMax * 100)}%</span>
+
+            <span style={{ color: "#888" }}>scale max</span>
+            <input type="range" min={5} max={200} value={Math.round(comp.scaleMax * 100)}
+                   onChange={(e) => setComp((c) => ({ ...c, scaleMax: Number(e.target.value) / 100 }))} />
+            <span style={{ color: "#bbb", width: 36, textAlign: "right" }}> </span>
+
+            <span style={{ color: "#888" }}>rot jit°</span>
+            <input type="range" min={0} max={360} value={comp.rotJit}
+                   onChange={(e) => setComp((c) => ({ ...c, rotJit: Number(e.target.value) }))} />
+            <span style={{ color: "#bbb", width: 36, textAlign: "right" }}>{comp.rotJit}</span>
+
+            <span style={{ color: "#888" }}>seed</span>
+            <input type="number" value={comp.seed}
+                   onChange={(e) => setComp((c) => ({ ...c, seed: Number(e.target.value) || 0 }))}
+                   style={{ background: "#1c1c1c", color: "#e6e6e6", border: "1px solid #555", borderRadius: 3, padding: "2px 4px", fontSize: 11 }} />
+            <button onClick={() => setComp((c) => ({ ...c, seed: Math.floor(Math.random() * 1e6) }))}
+                    style={{ ...smBtn, padding: "2px 6px", fontSize: 10 }}>🎲</button>
+          </div>
+          <label style={{ display: "flex", gap: 6, alignItems: "center", color: "#bbb", fontSize: 11 }}>
+            <input type="checkbox" checked={comp.follow}
+                   onChange={(e) => setComp((c) => ({ ...c, follow: e.target.checked }))} />
+            rotate to follow path tangent (line / vectorPath)
+          </label>
+          <div style={{ display: "flex", gap: 4 }}>
+            <button onClick={onStamp}     disabled={busy || !state.source} style={{ ...smBtn, background: "#1473e6", color: "white", border: "1px solid #1473e6" }}>Stamp</button>
+            <button onClick={onSettle}    disabled={busy || !state.source} style={smBtn}>Settle</button>
+            <button onClick={onDiverge}   disabled={busy || !state.source} style={smBtn}>Diverge</button>
+            <button onClick={onStepBack}  disabled={busy || history.length === 0} style={smBtn}>↶ back ({history.length})</button>
+          </div>
+          {history.length > 0 && (
+            <div style={{ display: "flex", gap: 4, overflowX: "auto", padding: "2px 0" }}>
+              {history.map((h, i) => (
+                <HistoryThumb key={i} buf={h} onClick={() => {
+                  setHistory((arr) => arr.slice(0, i));
+                  setState((s) => setSource(s, h));
+                }} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       <div style={{ display: "flex", gap: 4 }}>
         <select value={addPick} onChange={(e) => setAddPick(e.target.value as OpKind)} style={select} disabled={!state.source}>
           {OP_KINDS.map((k) => <option key={k} value={k}>{opMeta(k).label}</option>)}
@@ -280,6 +499,20 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
         </div>
       )}
     </div>
+  );
+}
+
+function HistoryThumb(props: { buf: PixelBuffer; onClick: () => void }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let u: string | null = null;
+    try { u = pixelBufferToObjectUrl(props.buf); setUrl(u); } catch { /* ignore */ }
+    return () => { if (u) try { URL.revokeObjectURL(u); } catch { /* ignore */ } };
+  }, [props.buf]);
+  return (
+    <button onClick={props.onClick} style={{ flex: "0 0 auto", padding: 0, border: "1px solid #444", background: "transparent", cursor: "pointer", borderRadius: 3 }}>
+      {url ? <img src={url} style={{ width: 40, height: 40, display: "block", imageRendering: "pixelated" }} /> : <div style={{ width: 40, height: 40 }} />}
+    </button>
   );
 }
 
