@@ -1,10 +1,20 @@
 // Tip commit pipeline. Pushes an in-memory PixelBuffer (from the op stack)
-// into Photoshop as a brush preset by way of a transient scratch document.
+// into Photoshop as a brush preset.
 //
-// See commit.notes.md for design rationale.
+// Strategy (revised after PS 26 rejected `make document`):
+//   - Use the user's currently active document.
+//   - Add a transient pixel layer named "BrushBuddy Tip Source".
+//   - Write the buffer to that layer via imaging.putPixels.
+//   - Make a rectangular selection covering the buffer's bounds.
+//   - defineBrush.
+//   - Delete the layer; deselect.
+//
+// This avoids the brittle batchPlay `make document` path AND the
+// `app.documents.add` DOM signature variation that errored as
+// "invalid target sheet". The user's doc is the safe scratch surface.
 
-import { action, imaging } from "photoshop";
-import { bp, bpSilent, ensureBrushTool, executeAsModal } from "../services/photoshop";
+import { action, app, imaging } from "photoshop";
+import { bp, bpSilent, ensureBrushTool, executeAsModal, getActiveDoc } from "../services/photoshop";
 import type { PixelBuffer } from "./types";
 
 export interface CommitResult {
@@ -14,10 +24,7 @@ export interface CommitResult {
 }
 
 const PS_BRUSH_MAX = 2500;
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
+const TIP_LAYER_NAME = "BrushBuddy Tip Source";
 
 export async function commitTipAsBrush(
   buf: PixelBuffer,
@@ -25,26 +32,20 @@ export async function commitTipAsBrush(
 ): Promise<CommitResult> {
   assertBufferOk(buf);
   return await executeAsModal("BrushBuddy: commit tip as brush", async () => {
-    const { result, scratchDocId } = await runCommit(buf, desiredName);
-    await teardownScratchDoc(scratchDocId);
-    return result;
+    return await runCommit(buf, desiredName);
   });
 }
 
+// Backwards-compatible no-op alias — the "keep scratch" mode no longer makes
+// sense now that we use a layer in the user's doc, but callers may still
+// import this name.
 export async function commitTipAsBrushKeepScratch(
   buf: PixelBuffer,
   desiredName?: string,
 ): Promise<CommitResult & { scratchDocId: number }> {
-  assertBufferOk(buf);
-  return await executeAsModal("BrushBuddy: commit tip (keep scratch)", async () => {
-    const { result, scratchDocId } = await runCommit(buf, desiredName);
-    return { ...result, scratchDocId };
-  });
+  const r = await commitTipAsBrush(buf, desiredName);
+  return { ...r, scratchDocId: -1 };
 }
-
-// ---------------------------------------------------------------------------
-// Implementation
-// ---------------------------------------------------------------------------
 
 function assertBufferOk(buf: PixelBuffer): void {
   if (!buf || !buf.data || buf.width <= 0 || buf.height <= 0) {
@@ -62,64 +63,56 @@ function assertBufferOk(buf: PixelBuffer): void {
   }
 }
 
-interface RunResult {
-  result: CommitResult;
-  scratchDocId: number;
-}
-
-async function runCommit(buf: PixelBuffer, desiredName?: string): Promise<RunResult> {
+async function runCommit(buf: PixelBuffer, desiredName?: string): Promise<CommitResult> {
   const name = desiredName ?? "BrushBuddy Tip";
-  let scratchDocId: number | null = null;
+  const doc = getActiveDoc();
+  let layerId: number | null = null;
 
   try {
-    scratchDocId = await createScratchDoc(buf.width, buf.height);
-    await writePixelsToActiveLayer(scratchDocId, buf);
-    await selectAll();
+    layerId = await makeTipLayer();
+    await writePixelsToLayer(doc.id, layerId, buf);
+    await selectRect(0, 0, buf.width, buf.height);
     await ensureBrushTool();
     await defineBrush(name);
 
     const actualName = await readActiveBrushName(name);
-    return {
-      result: { brushName: actualName, widthPx: buf.width, heightPx: buf.height },
-      scratchDocId,
-    };
-  } catch (e) {
-    // Clean up so we never orphan the scratch doc on failure.
-    if (scratchDocId !== null) {
-      await teardownScratchDoc(scratchDocId).catch(() => { /* swallow */ });
-    }
-    throw e;
+    return { brushName: actualName, widthPx: buf.width, heightPx: buf.height };
+  } finally {
+    // Always clean up: delete the tip layer + deselect, even on error.
+    if (layerId !== null) await deleteLayer(layerId).catch(() => { /* swallow */ });
+    await deselect().catch(() => { /* swallow */ });
   }
 }
 
-// Make a new RGB document at the buffer's dimensions. Use the UXP DOM
-// app.documents.add — far more reliable than batchPlay `make document` whose
-// descriptor varies between PS versions and was rejected with -128 in PS 26.
-async function createScratchDoc(width: number, height: number): Promise<number> {
-  const { app } = await import("photoshop");
-  const doc: any = await (app as any).documents.add({
-    width,
-    height,
-    resolution: 72,
-    mode: "RGBColorMode",
-    fill: "transparent",
-    name: "BrushBuddy Scratch",
-  });
-  if (!doc || typeof doc.id !== "number") {
-    throw new Error("Failed to create scratch document via app.documents.add");
-  }
-  return doc.id;
+// ---------------------------------------------------------------------------
+// Building blocks
+// ---------------------------------------------------------------------------
+
+// Make a new pixel layer at the top of the active doc; return its id.
+async function makeTipLayer(): Promise<number> {
+  const doc = getActiveDoc();
+  // Capture the set of layer ids before the make so we can diff and find the
+  // new one — `make layer` returns a result but the shape varies, easier to diff.
+  const before = new Set<number>((doc.layers ?? []).map((l: any) => l.id));
+  await bp([{
+    _obj: "make",
+    _target: [{ _ref: "layer" }],
+    using: { _obj: "layer", name: TIP_LAYER_NAME },
+    _options: { dialogOptions: "dontDisplay" },
+  }]);
+  // Re-read the doc to discover the new layer id. UXP's DOM updates synchronously.
+  const fresh = (app.activeDocument?.layers ?? []) as any[];
+  const made = fresh.find((l) => !before.has(l.id));
+  if (!made) throw new Error("makeTipLayer: created layer not found");
+  return made.id;
 }
 
-async function writePixelsToActiveLayer(docId: number, buf: PixelBuffer): Promise<void> {
+async function writePixelsToLayer(docId: number, layerId: number, buf: PixelBuffer): Promise<void> {
   if (!imaging || !(imaging as any).putPixels || !(imaging as any).createImageDataFromBuffer) {
-    throw new Error("UXP imaging.putPixels/createImageDataFromBuffer unavailable. Requires Photoshop 24.2+.");
+    throw new Error("UXP imaging.putPixels unavailable. Requires Photoshop 24.2+.");
   }
 
-  // imaging.createImageDataFromBuffer expects a Uint8Array view. PixelBuffer
-  // uses Uint8ClampedArray; share the same backing store (no copy).
   const u8 = new Uint8Array(buf.data.buffer, buf.data.byteOffset, buf.data.byteLength);
-
   const imgData = await (imaging as any).createImageDataFromBuffer(u8, {
     width: buf.width,
     height: buf.height,
@@ -133,7 +126,7 @@ async function writePixelsToActiveLayer(docId: number, buf: PixelBuffer): Promis
   try {
     await (imaging as any).putPixels({
       documentID: docId,
-      // No layerID → writes to the active (background) layer.
+      layerID: layerId,
       imageData: imgData,
       targetBounds: { left: 0, top: 0, right: buf.width, bottom: buf.height },
       replace: true,
@@ -145,11 +138,26 @@ async function writePixelsToActiveLayer(docId: number, buf: PixelBuffer): Promis
   }
 }
 
-async function selectAll(): Promise<void> {
+async function selectRect(left: number, top: number, right: number, bottom: number): Promise<void> {
   await bp([{
     _obj: "set",
     _target: [{ _ref: "channel", _property: "selection" }],
-    to: { _enum: "ordinal", _value: "allEnum" },
+    to: {
+      _obj: "rectangle",
+      top:    { _unit: "pixelsUnit", _value: top },
+      left:   { _unit: "pixelsUnit", _value: left },
+      bottom: { _unit: "pixelsUnit", _value: bottom },
+      right:  { _unit: "pixelsUnit", _value: right },
+    },
+    _options: { dialogOptions: "dontDisplay" },
+  }]);
+}
+
+async function deselect(): Promise<void> {
+  await bp([{
+    _obj: "set",
+    _target: [{ _ref: "channel", _property: "selection" }],
+    to: { _enum: "ordinal", _value: "none" },
     _options: { dialogOptions: "dontDisplay" },
   }]);
 }
@@ -162,8 +170,6 @@ async function defineBrush(name: string): Promise<void> {
   }]);
 }
 
-// PS often ignores our `name` and assigns "Sampled Brush N". Read it back
-// from currentToolOptions.brush.name (same trick brush.ts uses).
 async function readActiveBrushName(fallback: string): Promise<string> {
   try {
     const r = await action.batchPlay([{
@@ -181,21 +187,10 @@ async function readActiveBrushName(fallback: string): Promise<string> {
   }
 }
 
-// Close scratch doc without saving. We must target *this specific* doc id;
-// the user's source doc may have become active again at any moment.
-async function teardownScratchDoc(docId: number): Promise<void> {
-  // Wrap in its own modal scope only if we're not already in one. The public
-  // entrypoints already hold the modal lock, so call bp directly.
+async function deleteLayer(layerId: number): Promise<void> {
   await bpSilent([{
-    _obj: "select",
-    _target: [{ _ref: "document", _id: docId }],
-    _options: { dialogOptions: "dontDisplay" },
-  }]);
-  await bpSilent([{
-    _obj: "close",
-    _target: [{ _ref: "document", _id: docId }],
-    saving: { _enum: "yesNo", _value: "no" },
+    _obj: "delete",
+    _target: [{ _ref: "layer", _id: layerId }],
     _options: { dialogOptions: "dontDisplay" },
   }]);
 }
-
