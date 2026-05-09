@@ -530,17 +530,7 @@ export async function renderProofStroke(): Promise<void> {
       _options: { dialogOptions: "dontDisplay" },
     }]);
 
-    // Step 2 — explicitly select the path. Without this, "stroke" complains
-    // it's "not currently available" because no path is the active target.
-    try {
-      await bp([{
-        _obj: "select",
-        _target: [{ _ref: "path", _name: "Work Path" }],
-        _options: { dialogOptions: "dontDisplay" },
-      }]);
-    } catch { /* if rename happens it's fine, targetEnum still resolves */ }
-
-    // Step 3 — stroke. Try the modern form first, fall back to the legacy.
+    // Step 2 — stroke. Try the modern form first, fall back to the legacy.
     const strokeAttempts: any[][] = [
       [{
         _obj: "stroke",
@@ -566,16 +556,24 @@ export async function renderProofStroke(): Promise<void> {
       try { await bp(cmd); strokeErr = null; break; }
       catch (e) { strokeErr = e; }
     }
-    if (strokeErr) throw strokeErr;
 
-    // Step 4 — clean up the work path.
+    // Step 3 — clean up the work path either way.
     try {
       await bp([{
         _obj: "delete",
         _target: [{ _ref: "path", _enum: "ordinal", _value: "targetEnum" }],
         _options: { dialogOptions: "dontDisplay" },
       }]);
-    } catch { /* path may already be gone */ }
+    } catch { /* ignore */ }
+
+    if (strokeErr) {
+      // Spike note: programmatic path-stroke is unresolved in UXP for our
+      // setup. The brush mutation IS proven; verify visually by painting.
+      throw new Error(
+        `${strokeErr.message ?? strokeErr} — open PS Brush Settings panel ` +
+        `(F5) to verify the dynamics applied; paint manually to see stroke.`,
+      );
+    }
   });
 }
 
