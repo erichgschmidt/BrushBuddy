@@ -13,7 +13,9 @@ import { mulberry32 } from "../generators/rng";
 import type { VectorShape } from "../vector/types";
 import { buildPathSampler } from "../vector/sample";
 
-export type LayoutKind = "scatter" | "grid" | "line" | "vectorPath";
+import type { MarkPlacement } from "../analyze/types";
+
+export type LayoutKind = "scatter" | "grid" | "line" | "vectorPath" | "fingerprint";
 
 export interface VariationParams {
   positionJitterPx: number;   // 0..N
@@ -43,6 +45,8 @@ export interface ComposerParams {
   lineTo?:   { x: number; y: number };
   // vectorPath:
   vectorShape?: VectorShape | null;
+  // fingerprint:
+  fingerprintPlacements?: MarkPlacement[] | null;
 }
 
 export const DEFAULT_VARIATION: VariationParams = {
@@ -121,6 +125,18 @@ function generatePlacements(params: ComposerParams, rand: () => number): PlacedS
         opacity: oJitter(rand),
         flipX: rand() < v.flipXProb,
         flipY: rand() < v.flipYProb,
+      });
+    }
+  } else if (params.layout === "fingerprint") {
+    const placements = params.fingerprintPlacements ?? [];
+    for (const p of placements) {
+      out.push({
+        cx: p.cx, cy: p.cy,
+        scale: p.scale,
+        angleRad: p.angleDeg * Math.PI / 180,
+        opacity: p.opacity,
+        flipX: !!p.flipX,
+        flipY: !!p.flipY,
       });
     }
   } else if (params.layout === "vectorPath") {

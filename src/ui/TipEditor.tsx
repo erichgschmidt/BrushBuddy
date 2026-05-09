@@ -1,6 +1,6 @@
 // Tip Editor — non-destructive op-stack editor for the brush tip.
-// Wires together: ingest (read pixels) → opstack (apply chain) → canvas preview
-// → commit (push back into PS as a new brush).
+// Wires together: ingest (read pixels) / vector / generators / composer /
+// analyze → opstack (apply chain) → commit (push back into PS as a new brush).
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ingestFromSelection, ingestFromActiveLayer, ingestFromFile } from "../tip/ingest";
@@ -9,14 +9,19 @@ import {
   runStackMemoized, setSource, toggleOp, updateOpParams, moveOp,
 } from "../tip/opstack";
 import { commitTipAsBrush } from "../tip/commit";
-import { probeStamp } from "../tip/stampProbe";
 import { pixelBufferToObjectUrl } from "../tip/png";
 import {
   generatePerlin, generateWorley, generateVoronoi, generateCanvasWeave,
 } from "../tip/generators";
 import { VECTOR_PRESETS, PRESET_NAMES, rasterizeShape, type VectorShape } from "../tip/vector";
 import { compose, diverge, settle, DEFAULT_VARIATION, type LayoutKind } from "../tip/composer";
+import {
+  extractMarks, computeFingerprint, summarizeFingerprint,
+  regeneratePlacements, DEFAULT_MULTIPLIERS,
+  type Fingerprint, type Mark, type Multipliers,
+} from "../tip/analyze";
 import { gaussianBlur, autoCrop, threshold } from "../tip/processing";
+import { Section, styles } from "./common";
 import type { PixelBuffer } from "../tip/types";
 
 type GeneratorKind = "perlin" | "worley" | "voronoi" | "canvas";
@@ -24,9 +29,9 @@ type GeneratorKind = "perlin" | "worley" | "voronoi" | "canvas";
 interface GenParams {
   kind: GeneratorKind;
   size: number;
-  scale: number;     // perlin/canvas: feature size; worley/voronoi: cell size
-  detail: number;    // perlin: octaves; worley: jitter*100; voronoi: jitter*100; canvas: jitter*100
-  variant: number;   // perlin: persistence*100; worley: 0=F1 1=F2 2=F2-F1; voronoi: 0=value 1=edges; canvas: contrast*100
+  scale: number;
+  detail: number;
+  variant: number;
   seed: number;
 }
 
@@ -34,33 +39,15 @@ function runGenerator(p: GenParams): PixelBuffer {
   const size = Math.max(16, Math.min(2500, p.size | 0));
   switch (p.kind) {
     case "perlin":
-      return generatePerlin({
-        width: size, height: size,
-        scale: p.scale, octaves: Math.max(1, Math.min(8, Math.round(p.detail))),
-        persistence: p.variant / 100, lacunarity: 2, seed: p.seed,
-      });
+      return generatePerlin({ width: size, height: size, scale: p.scale, octaves: Math.max(1, Math.min(8, Math.round(p.detail))), persistence: p.variant / 100, lacunarity: 2, seed: p.seed });
     case "worley": {
       const modes = ["F1", "F2", "F2-F1"] as const;
-      return generateWorley({
-        width: size, height: size,
-        cellSize: p.scale, jitter: p.detail / 100,
-        mode: modes[Math.max(0, Math.min(2, Math.round(p.variant)))],
-        seed: p.seed,
-      });
+      return generateWorley({ width: size, height: size, cellSize: p.scale, jitter: p.detail / 100, mode: modes[Math.max(0, Math.min(2, Math.round(p.variant)))], seed: p.seed });
     }
     case "voronoi":
-      return generateVoronoi({
-        width: size, height: size,
-        cellSize: p.scale, jitter: p.detail / 100,
-        mode: p.variant >= 50 ? "edges" : "value",
-        seed: p.seed,
-      });
+      return generateVoronoi({ width: size, height: size, cellSize: p.scale, jitter: p.detail / 100, mode: p.variant >= 50 ? "edges" : "value", seed: p.seed });
     case "canvas":
-      return generateCanvasWeave({
-        width: size, height: size,
-        pitch: p.scale, jitter: p.detail / 100,
-        contrast: p.variant / 100, seed: p.seed,
-      });
+      return generateCanvasWeave({ width: size, height: size, pitch: p.scale, jitter: p.detail / 100, contrast: p.variant / 100, seed: p.seed });
   }
 }
 
@@ -80,36 +67,29 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
   const [addPick, setAddPick] = useState<OpKind>("alphaFromLuminance");
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const lastUrlRef = useRef<string | null>(null);
-  const [gen, setGen] = useState<GenParams>({
-    kind: "perlin", size: 256, scale: 32, detail: 4, variant: 50, seed: 1,
-  });
-  const [showGen, setShowGen] = useState(false);
-  const [showVec, setShowVec] = useState(false);
-  const [showComp, setShowComp] = useState(false);
+
+  const [gen, setGen] = useState<GenParams>({ kind: "perlin", size: 256, scale: 32, detail: 4, variant: 50, seed: 1 });
   const [vecPreset, setVecPreset] = useState<string>("circle");
   const [vecSize, setVecSize] = useState(256);
   const [comp, setComp] = useState<{
-    layout: LayoutKind;
-    count: number;
-    posJit: number;
-    scaleMin: number;
-    scaleMax: number;
-    rotJit: number;
-    follow: boolean;
-    pathPreset: string;
-    seed: number;
+    layout: LayoutKind; count: number; posJit: number;
+    scaleMin: number; scaleMax: number; rotJit: number; follow: boolean;
+    pathPreset: string; seed: number;
   }>({ layout: "scatter", count: 16, posJit: 0, scaleMin: 0.6, scaleMax: 1.0, rotJit: 90, follow: false, pathPreset: "circle", seed: 1 });
   const [history, setHistory] = useState<PixelBuffer[]>([]);
 
-  // Compute the final preview buffer (memoized inside opstack).
+  // Analyze state
+  const [marks, setMarks] = useState<Mark[] | null>(null);
+  const [fingerprint, setFingerprint] = useState<Fingerprint | null>(null);
+  const [multipliers, setMultipliers] = useState<Multipliers>(DEFAULT_MULTIPLIERS);
+  const [analyzeSeed, setAnalyzeSeed] = useState(1);
+
   const preview = useMemo<PixelBuffer | null>(() => {
     if (!state.source) return null;
     try { return runStackMemoized(state, { useMemo: true }); }
     catch (e: any) { setStatus({ text: e?.message ?? String(e), kind: "err" }); return null; }
   }, [state]);
 
-  // Encode preview to a PNG Blob URL whenever it changes.
-  // (UXP's canvas 2D context lacks ImageData/createImageData, so we use <img>.)
   useEffect(() => {
     if (lastUrlRef.current) { try { URL.revokeObjectURL(lastUrlRef.current); } catch { /* ignore */ } }
     if (!preview) { setPreviewUrl(null); lastUrlRef.current = null; return; }
@@ -122,13 +102,16 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
     }
   }, [preview]);
 
+  function pushHistory(buf: PixelBuffer) { setHistory((h) => [...h, buf].slice(-8)); }
+
   async function onIngest(source: "selection" | "layer" | "file") {
     setBusy(true); setStatus({ text: "reading pixels…", kind: "info" });
     try {
-      const r =
-        source === "selection" ? await ingestFromSelection() :
-        source === "layer"     ? await ingestFromActiveLayer() :
-                                 await ingestFromFile();
+      const r = source === "selection" ? await ingestFromSelection() :
+                source === "layer"     ? await ingestFromActiveLayer() :
+                                         await ingestFromFile();
+      const cur = state.source;
+      if (cur) pushHistory(cur);
       setState((s) => setSource(s, r.buffer));
       setStatus({ text: `ingested: ${r.sourceLabel}`, kind: "ok" });
     } catch (e: any) {
@@ -148,21 +131,21 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
     } finally { setBusy(false); }
   }
 
-  function pushHistory(buf: PixelBuffer) {
-    setHistory((h) => [...h, buf].slice(-8));
-  }
-
-  function setSourceTracked(buf: PixelBuffer, label: string) {
-    const cur = state.source;
-    if (cur) pushHistory(cur);
-    setState((s) => setSource(s, buf));
-    setStatus({ text: label, kind: "ok" });
-  }
-
   function onUseVector() {
     const shape: VectorShape = VECTOR_PRESETS[vecPreset];
     const buf = rasterizeShape(shape, vecSize, vecSize);
-    setSourceTracked(buf, `vector → ${vecPreset} ${vecSize}×${vecSize}`);
+    if (state.source) pushHistory(state.source);
+    setState((s) => setSource(s, buf));
+    setStatus({ text: `vector → ${vecPreset} ${vecSize}×${vecSize}`, kind: "ok" });
+  }
+
+  function onGenerate() {
+    try {
+      const buf = runGenerator(gen);
+      if (state.source) pushHistory(state.source);
+      setState((s) => setSource(s, buf));
+      setStatus({ text: `generated ${gen.kind} ${gen.size}×${gen.size}`, kind: "ok" });
+    } catch (e: any) { setStatus({ text: e?.message ?? String(e), kind: "err" }); }
   }
 
   function getCanvasSize(): number {
@@ -176,16 +159,8 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
     try {
       const out = compose(state.source, {
         width: size, height: size,
-        layout: comp.layout,
-        count: comp.count,
-        seed: comp.seed,
-        variation: {
-          ...DEFAULT_VARIATION,
-          positionJitterPx: comp.posJit,
-          scaleMin: comp.scaleMin, scaleMax: comp.scaleMax,
-          rotationJitterDeg: comp.rotJit,
-          rotationFollowTangent: comp.follow,
-        },
+        layout: comp.layout, count: comp.count, seed: comp.seed,
+        variation: { ...DEFAULT_VARIATION, positionJitterPx: comp.posJit, scaleMin: comp.scaleMin, scaleMax: comp.scaleMax, rotationJitterDeg: comp.rotJit, rotationFollowTangent: comp.follow },
         vectorShape: comp.layout === "vectorPath" ? VECTOR_PRESETS[comp.pathPreset] : null,
         lineFrom: { x: 0.1, y: 0.5 }, lineTo: { x: 0.9, y: 0.5 },
         blend: "max",
@@ -198,12 +173,10 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
 
   function onDiverge() {
     if (!state.source) return;
-    const out = diverge(state.source, { seed: comp.seed });
     pushHistory(state.source);
-    setState((s) => setSource(s, out));
+    setState((s) => setSource(s, diverge(state.source!, { seed: comp.seed })));
     setStatus({ text: "diverged", kind: "ok" });
   }
-
   function onSettle() {
     if (!state.source) return;
     let out = settle(state.source, { seed: comp.seed });
@@ -214,7 +187,6 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
     setState((s) => setSource(s, out));
     setStatus({ text: "settled", kind: "ok" });
   }
-
   function onStepBack() {
     setHistory((h) => {
       if (h.length === 0) return h;
@@ -224,236 +196,131 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
     });
   }
 
+  function onAnalyze() {
+    if (!state.source) { setStatus({ text: "ingest or generate a source first", kind: "err" }); return; }
+    setBusy(true);
+    try {
+      const ms = extractMarks(state.source);
+      const fp = computeFingerprint(ms, state.source.width, state.source.height);
+      setMarks(ms);
+      setFingerprint(fp);
+      setStatus({ text: `analyzed: ${ms.length} marks`, kind: ms.length > 0 ? "ok" : "err" });
+    } catch (e: any) { setStatus({ text: e?.message ?? String(e), kind: "err" }); }
+    finally { setBusy(false); }
+  }
+
+  function onStampFromFingerprint() {
+    if (!state.source || !fingerprint) { setStatus({ text: "analyze first", kind: "err" }); return; }
+    const size = getCanvasSize();
+    const tipPx = Math.max(state.source.width, state.source.height);
+    const placements = regeneratePlacements(fingerprint, multipliers, { width: size, height: size, seed: analyzeSeed, sourceTipSize: tipPx });
+    try {
+      const out = compose(state.source, {
+        width: size, height: size,
+        layout: "fingerprint", count: placements.length, seed: analyzeSeed,
+        variation: { ...DEFAULT_VARIATION },
+        fingerprintPlacements: placements,
+        blend: "max",
+      });
+      pushHistory(state.source);
+      setState((s) => setSource(s, out));
+      setStatus({ text: `regenerated ${placements.length} marks`, kind: "ok" });
+    } catch (e: any) { setStatus({ text: e?.message ?? String(e), kind: "err" }); }
+  }
+
   function onAdd() {
     const op: Omit<Op, "id"> = { kind: addPick, enabled: true, params: defaultParamsFor(addPick) };
     setState((s) => addOp(s, op));
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {/* Source row — always visible */}
       <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-        <button onClick={() => onIngest("selection")} disabled={busy} style={smBtn}>from selection</button>
-        <button onClick={() => onIngest("layer")}     disabled={busy} style={smBtn}>from layer</button>
-        <button onClick={() => onIngest("file")}      disabled={busy} style={smBtn}>from file…</button>
-        <button onClick={() => setShowGen((v) => !v)} disabled={busy} style={smBtn}>
-          {showGen ? "▼ generate" : "▶ generate"}
-        </button>
-        <button onClick={() => setShowVec((v) => !v)} disabled={busy} style={smBtn}>
-          {showVec ? "▼ vector" : "▶ vector"}
-        </button>
+        <button onClick={() => onIngest("selection")} disabled={busy} style={styles.smBtn}>from selection</button>
+        <button onClick={() => onIngest("layer")}     disabled={busy} style={styles.smBtn}>from layer</button>
+        <button onClick={() => onIngest("file")}      disabled={busy} style={styles.smBtn}>from file…</button>
       </div>
 
-      {showVec && (
-        <div style={{ background: "#1c1c1c", border: "1px solid #3a3a3a", borderRadius: 4, padding: 6, display: "flex", flexDirection: "column", gap: 6 }}>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-            {PRESET_NAMES.map((name) => (
-              <button
-                key={name}
-                onClick={() => setVecPreset(name)}
-                style={{
-                  ...smBtn,
-                  flex: "0 0 auto",
-                  background: vecPreset === name ? "#1473e6" : "#3a3a3a",
-                  border: vecPreset === name ? "1px solid #1473e6" : "1px solid #555",
-                }}
-              >{name}</button>
-            ))}
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 4, alignItems: "center", fontSize: 11 }}>
-            <span style={{ color: "#888" }}>size</span>
-            <input type="range" min={32} max={1024} step={16} value={vecSize}
-                   onChange={(e) => setVecSize(Number(e.target.value))} />
-            <span style={{ color: "#bbb", width: 36, textAlign: "right" }}>{vecSize}</span>
-          </div>
-          <button onClick={onUseVector} style={{ ...smBtn, background: "#1473e6", color: "white", border: "1px solid #1473e6" }}>
-            Rasterize as source
-          </button>
-        </div>
-      )}
-
-      {showGen && (
-        <div style={{ background: "#1c1c1c", border: "1px solid #3a3a3a", borderRadius: 4, padding: 6, display: "flex", flexDirection: "column", gap: 6 }}>
-          <div style={{ display: "flex", gap: 4 }}>
-            {(["perlin", "worley", "voronoi", "canvas"] as GeneratorKind[]).map((k) => (
-              <button
-                key={k}
-                onClick={() => setGen((g) => ({ ...g, kind: k }))}
-                style={{
-                  ...smBtn,
-                  background: gen.kind === k ? "#1473e6" : "#3a3a3a",
-                  border: gen.kind === k ? "1px solid #1473e6" : "1px solid #555",
-                }}
-              >{k}</button>
-            ))}
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 4, alignItems: "center", fontSize: 11 }}>
-            <span style={{ color: "#888" }}>size</span>
-            <input type="range" min={32} max={1024} step={16} value={gen.size}
-                   onChange={(e) => setGen((g) => ({ ...g, size: Number(e.target.value) }))} />
-            <span style={{ color: "#bbb", width: 36, textAlign: "right" }}>{gen.size}</span>
-
-            <span style={{ color: "#888" }}>{gen.kind === "canvas" ? "pitch" : gen.kind === "perlin" ? "scale" : "cell"}</span>
-            <input type="range" min={2} max={256} step={1} value={gen.scale}
-                   onChange={(e) => setGen((g) => ({ ...g, scale: Number(e.target.value) }))} />
-            <span style={{ color: "#bbb", width: 36, textAlign: "right" }}>{gen.scale}</span>
-
-            <span style={{ color: "#888" }}>{gen.kind === "perlin" ? "octaves" : "jitter"}</span>
-            <input type="range" min={gen.kind === "perlin" ? 1 : 0} max={gen.kind === "perlin" ? 8 : 100} step={1} value={gen.detail}
-                   onChange={(e) => setGen((g) => ({ ...g, detail: Number(e.target.value) }))} />
-            <span style={{ color: "#bbb", width: 36, textAlign: "right" }}>{gen.detail}</span>
-
-            <span style={{ color: "#888" }}>{
-              gen.kind === "perlin" ? "persist" :
-              gen.kind === "worley" ? "mode" :
-              gen.kind === "voronoi" ? "mode" :
-              "contrast"
-            }</span>
-            <input type="range"
-                   min={0}
-                   max={gen.kind === "worley" ? 2 : 100}
-                   step={1}
-                   value={gen.variant}
-                   onChange={(e) => setGen((g) => ({ ...g, variant: Number(e.target.value) }))} />
-            <span style={{ color: "#bbb", width: 60, textAlign: "right" }}>{
-              gen.kind === "worley" ? (["F1", "F2", "F2-F1"][Math.round(gen.variant)] ?? "F1") :
-              gen.kind === "voronoi" ? (gen.variant >= 50 ? "edges" : "value") :
-              gen.variant
-            }</span>
-
-            <span style={{ color: "#888" }}>seed</span>
-            <input type="number" value={gen.seed}
-                   onChange={(e) => setGen((g) => ({ ...g, seed: Number(e.target.value) || 0 }))}
-                   style={{ background: "#1c1c1c", color: "#e6e6e6", border: "1px solid #555", borderRadius: 3, padding: "2px 4px", fontSize: 11 }} />
-            <button onClick={() => setGen((g) => ({ ...g, seed: Math.floor(Math.random() * 1e6) }))}
-                    style={{ ...smBtn, padding: "2px 6px", fontSize: 10 }}>🎲</button>
-          </div>
-          <button
-            onClick={() => {
-              try {
-                const buf = runGenerator(gen);
-                setState((s) => setSource(s, buf));
-                setStatus({ text: `generated ${gen.kind} ${gen.size}×${gen.size}`, kind: "ok" });
-              } catch (e: any) { setStatus({ text: e?.message ?? String(e), kind: "err" }); }
-            }}
-            style={{ ...smBtn, background: "#1473e6", color: "white", border: "1px solid #1473e6" }}
-          >Generate as source</button>
-        </div>
-      )}
-      <button
-        onClick={async () => {
-          setBusy(true); setStatus({ text: "probing stamp events…", kind: "info" });
-          try {
-            const r = await probeStamp();
-            const winners = r.filter((x) => x.ok).map((x) => x.label);
-            setStatus({
-              text: winners.length
-                ? `stamp probe: WINNERS = ${winners.join(", ")} — see devtools console for full results`
-                : `stamp probe: no event accepted (${r.length} tried). Console has details.`,
-              kind: winners.length ? "ok" : "err",
-            });
-          } catch (e: any) { setStatus({ text: e?.message ?? String(e), kind: "err" }); }
-          finally { setBusy(false); }
-        }}
-        disabled={busy}
-        style={{ ...smBtn, fontSize: 10, opacity: 0.7 }}
-        title="Spike: see if PS will accept a programmatic single brush dab. Required to extract tip pixels from arbitrary brushes."
-      >debug: probe stamp events</button>
-      <button onClick={onCommit} disabled={busy || !preview} style={primaryBtn}>Commit as brush</button>
-
-      <div style={{
-        background: "repeating-conic-gradient(#222 0 25%, #333 0 50%) 0 0/16px 16px",
-        borderRadius: 4, padding: 8,
-        display: "flex", justifyContent: "center", alignItems: "center", minHeight: 120,
-      }}>
+      {/* Preview — always visible */}
+      <div style={{ background: "repeating-conic-gradient(#222 0 25%, #333 0 50%) 0 0/16px 16px", borderRadius: 4, padding: 8, display: "flex", justifyContent: "center", alignItems: "center", minHeight: 120 }}>
         {previewUrl
           ? <img src={previewUrl} style={{ maxWidth: "100%", maxHeight: 220, imageRendering: "pixelated" }} />
-          : <div style={{ color: "#555", fontSize: 11 }}>no preview</div>}
+          : <div style={{ color: "#555", fontSize: 11 }}>no source — ingest, generate, or pick a vector</div>}
       </div>
       {preview && (
-        <div style={{ color: "#888", fontSize: 11, textAlign: "center" }}>
-          {preview.width} × {preview.height}
-        </div>
+        <div style={{ color: "#888", fontSize: 11, textAlign: "center" }}>{preview.width} × {preview.height}</div>
       )}
 
-      <button onClick={() => setShowComp((v) => !v)} disabled={busy} style={smBtn}>
-        {showComp ? "▼ Composer (feedback loop)" : "▶ Composer (feedback loop)"}
-      </button>
+      {/* Commit — always visible */}
+      <button onClick={onCommit} disabled={busy || !preview} style={styles.primaryBtn}>Commit as brush</button>
 
-      {showComp && (
-        <div style={{ background: "#1c1c1c", border: "1px solid #3a3a3a", borderRadius: 4, padding: 6, display: "flex", flexDirection: "column", gap: 6 }}>
+      <Section title="Vector source">
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {PRESET_NAMES.map((name) => (
+              <button key={name} onClick={() => setVecPreset(name)}
+                style={{ ...styles.smBtn, flex: "0 0 auto", background: vecPreset === name ? "#1473e6" : "#3a3a3a", border: vecPreset === name ? "1px solid #1473e6" : "1px solid #555" }}>
+                {name}
+              </button>
+            ))}
+          </div>
+          <RowSlider label="size" value={vecSize} min={32} max={1024} step={16} onChange={setVecSize} />
+          <button onClick={onUseVector} style={{ ...styles.smBtn, background: "#1473e6", color: "white", border: "1px solid #1473e6" }}>Rasterize as source</button>
+        </div>
+      </Section>
+
+      <Section title="Generators (Perlin / Worley / Voronoi / Canvas)">
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ display: "flex", gap: 4 }}>
+            {(["perlin", "worley", "voronoi", "canvas"] as GeneratorKind[]).map((k) => (
+              <button key={k} onClick={() => setGen((g) => ({ ...g, kind: k }))}
+                style={{ ...styles.smBtn, background: gen.kind === k ? "#1473e6" : "#3a3a3a", border: gen.kind === k ? "1px solid #1473e6" : "1px solid #555" }}>{k}</button>
+            ))}
+          </div>
+          <RowSlider label="size" value={gen.size} min={32} max={1024} step={16} onChange={(v) => setGen((g) => ({ ...g, size: v }))} />
+          <RowSlider label={gen.kind === "canvas" ? "pitch" : gen.kind === "perlin" ? "scale" : "cell"} value={gen.scale} min={2} max={256} onChange={(v) => setGen((g) => ({ ...g, scale: v }))} />
+          <RowSlider label={gen.kind === "perlin" ? "octaves" : "jitter"} value={gen.detail} min={gen.kind === "perlin" ? 1 : 0} max={gen.kind === "perlin" ? 8 : 100} onChange={(v) => setGen((g) => ({ ...g, detail: v }))} />
+          <RowSlider label={gen.kind === "perlin" ? "persist" : gen.kind === "worley" ? "mode" : gen.kind === "voronoi" ? "mode" : "contrast"}
+                     value={gen.variant} min={0} max={gen.kind === "worley" ? 2 : 100}
+                     onChange={(v) => setGen((g) => ({ ...g, variant: v }))}
+                     valueLabel={gen.kind === "worley" ? (["F1", "F2", "F2-F1"][Math.round(gen.variant)] ?? "F1") : gen.kind === "voronoi" ? (gen.variant >= 50 ? "edges" : "value") : String(gen.variant)} />
+          <SeedRow value={gen.seed} onChange={(v) => setGen((g) => ({ ...g, seed: v }))} />
+          <button onClick={onGenerate} style={{ ...styles.smBtn, background: "#1473e6", color: "white", border: "1px solid #1473e6" }}>Generate as source</button>
+        </div>
+      </Section>
+
+      <Section title="Composer (feedback loop)">
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <div style={{ display: "flex", gap: 4 }}>
             {(["scatter", "grid", "line", "vectorPath"] as LayoutKind[]).map((k) => (
-              <button
-                key={k}
-                onClick={() => setComp((c) => ({ ...c, layout: k }))}
-                style={{
-                  ...smBtn,
-                  background: comp.layout === k ? "#1473e6" : "#3a3a3a",
-                  border: comp.layout === k ? "1px solid #1473e6" : "1px solid #555",
-                }}
-              >{k}</button>
+              <button key={k} onClick={() => setComp((c) => ({ ...c, layout: k }))}
+                style={{ ...styles.smBtn, background: comp.layout === k ? "#1473e6" : "#3a3a3a", border: comp.layout === k ? "1px solid #1473e6" : "1px solid #555" }}>{k}</button>
             ))}
           </div>
           {comp.layout === "vectorPath" && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
               {PRESET_NAMES.map((name) => (
-                <button
-                  key={name}
-                  onClick={() => setComp((c) => ({ ...c, pathPreset: name }))}
-                  style={{
-                    ...smBtn,
-                    flex: "0 0 auto",
-                    fontSize: 10, padding: "3px 6px",
-                    background: comp.pathPreset === name ? "#1473e6" : "#3a3a3a",
-                    border: comp.pathPreset === name ? "1px solid #1473e6" : "1px solid #555",
-                  }}
-                >{name}</button>
+                <button key={name} onClick={() => setComp((c) => ({ ...c, pathPreset: name }))}
+                  style={{ ...styles.smBtn, flex: "0 0 auto", fontSize: 10, padding: "3px 6px", background: comp.pathPreset === name ? "#1473e6" : "#3a3a3a", border: comp.pathPreset === name ? "1px solid #1473e6" : "1px solid #555" }}>{name}</button>
               ))}
             </div>
           )}
-          <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 4, alignItems: "center", fontSize: 11 }}>
-            <span style={{ color: "#888" }}>count</span>
-            <input type="range" min={1} max={64} value={comp.count}
-                   onChange={(e) => setComp((c) => ({ ...c, count: Number(e.target.value) }))} />
-            <span style={{ color: "#bbb", width: 36, textAlign: "right" }}>{comp.count}</span>
-
-            <span style={{ color: "#888" }}>pos jit</span>
-            <input type="range" min={0} max={200} value={comp.posJit}
-                   onChange={(e) => setComp((c) => ({ ...c, posJit: Number(e.target.value) }))} />
-            <span style={{ color: "#bbb", width: 36, textAlign: "right" }}>{comp.posJit}</span>
-
-            <span style={{ color: "#888" }}>scale</span>
-            <input type="range" min={5} max={200} value={Math.round(comp.scaleMin * 100)}
-                   onChange={(e) => setComp((c) => ({ ...c, scaleMin: Number(e.target.value) / 100 }))} />
-            <span style={{ color: "#bbb", width: 36, textAlign: "right" }}>{Math.round(comp.scaleMin * 100)}–{Math.round(comp.scaleMax * 100)}%</span>
-
-            <span style={{ color: "#888" }}>scale max</span>
-            <input type="range" min={5} max={200} value={Math.round(comp.scaleMax * 100)}
-                   onChange={(e) => setComp((c) => ({ ...c, scaleMax: Number(e.target.value) / 100 }))} />
-            <span style={{ color: "#bbb", width: 36, textAlign: "right" }}> </span>
-
-            <span style={{ color: "#888" }}>rot jit°</span>
-            <input type="range" min={0} max={360} value={comp.rotJit}
-                   onChange={(e) => setComp((c) => ({ ...c, rotJit: Number(e.target.value) }))} />
-            <span style={{ color: "#bbb", width: 36, textAlign: "right" }}>{comp.rotJit}</span>
-
-            <span style={{ color: "#888" }}>seed</span>
-            <input type="number" value={comp.seed}
-                   onChange={(e) => setComp((c) => ({ ...c, seed: Number(e.target.value) || 0 }))}
-                   style={{ background: "#1c1c1c", color: "#e6e6e6", border: "1px solid #555", borderRadius: 3, padding: "2px 4px", fontSize: 11 }} />
-            <button onClick={() => setComp((c) => ({ ...c, seed: Math.floor(Math.random() * 1e6) }))}
-                    style={{ ...smBtn, padding: "2px 6px", fontSize: 10 }}>🎲</button>
-          </div>
+          <RowSlider label="count"   value={comp.count}  min={1}    max={64}  onChange={(v) => setComp((c) => ({ ...c, count: v }))} />
+          <RowSlider label="pos jit" value={comp.posJit} min={0}    max={200} onChange={(v) => setComp((c) => ({ ...c, posJit: v }))} />
+          <RowSlider label="scale min" value={Math.round(comp.scaleMin * 100)} min={5} max={200} onChange={(v) => setComp((c) => ({ ...c, scaleMin: v / 100 }))} />
+          <RowSlider label="scale max" value={Math.round(comp.scaleMax * 100)} min={5} max={200} onChange={(v) => setComp((c) => ({ ...c, scaleMax: v / 100 }))} />
+          <RowSlider label="rot jit°"  value={comp.rotJit} min={0} max={360} onChange={(v) => setComp((c) => ({ ...c, rotJit: v }))} />
           <label style={{ display: "flex", gap: 6, alignItems: "center", color: "#bbb", fontSize: 11 }}>
-            <input type="checkbox" checked={comp.follow}
-                   onChange={(e) => setComp((c) => ({ ...c, follow: e.target.checked }))} />
-            rotate to follow path tangent (line / vectorPath)
+            <input type="checkbox" checked={comp.follow} onChange={(e) => setComp((c) => ({ ...c, follow: e.target.checked }))} />
+            rotate to follow path tangent
           </label>
+          <SeedRow value={comp.seed} onChange={(v) => setComp((c) => ({ ...c, seed: v }))} />
           <div style={{ display: "flex", gap: 4 }}>
-            <button onClick={onStamp}     disabled={busy || !state.source} style={{ ...smBtn, background: "#1473e6", color: "white", border: "1px solid #1473e6" }}>Stamp</button>
-            <button onClick={onSettle}    disabled={busy || !state.source} style={smBtn}>Settle</button>
-            <button onClick={onDiverge}   disabled={busy || !state.source} style={smBtn}>Diverge</button>
-            <button onClick={onStepBack}  disabled={busy || history.length === 0} style={smBtn}>↶ back ({history.length})</button>
+            <button onClick={onStamp}    disabled={busy || !state.source} style={{ ...styles.smBtn, background: "#1473e6", color: "white", border: "1px solid #1473e6" }}>Stamp</button>
+            <button onClick={onSettle}   disabled={busy || !state.source} style={styles.smBtn}>Settle</button>
+            <button onClick={onDiverge}  disabled={busy || !state.source} style={styles.smBtn}>Diverge</button>
+            <button onClick={onStepBack} disabled={busy || history.length === 0} style={styles.smBtn}>↶ back ({history.length})</button>
           </div>
           {history.length > 0 && (
             <div style={{ display: "flex", gap: 4, overflowX: "auto", padding: "2px 0" }}>
@@ -466,38 +333,100 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
             </div>
           )}
         </div>
-      )}
+      </Section>
 
-      <div style={{ display: "flex", gap: 4 }}>
-        <select value={addPick} onChange={(e) => setAddPick(e.target.value as OpKind)} style={select} disabled={!state.source}>
-          {OP_KINDS.map((k) => <option key={k} value={k}>{opMeta(k).label}</option>)}
-        </select>
-        <button onClick={onAdd} disabled={busy || !state.source} style={smBtn}>+ add</button>
-      </div>
+      <Section title="Analyze (extract → fingerprint → regenerate)">
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <button onClick={onAnalyze} disabled={busy || !state.source} style={styles.smBtn}>
+            Analyze current source
+          </button>
+          {fingerprint && marks && (
+            <div style={{ background: "#1c1c1c", border: "1px solid #333", borderRadius: 4, padding: 6, fontSize: 10, color: "#bbb", lineHeight: 1.5 }}>
+              <div style={{ color: "#80e080", marginBottom: 3, fontWeight: 600 }}>{marks.length} marks detected</div>
+              {summarizeFingerprint(fingerprint).map((line, i) => <div key={i}>{line}</div>)}
+            </div>
+          )}
+          {fingerprint && (
+            <>
+              <div style={{ color: "#888", fontSize: 10, marginTop: 4, textTransform: "uppercase", letterSpacing: 0.4 }}>Multipliers (1× = match reference)</div>
+              <RowSlider label="density"     value={Math.round(multipliers.density   * 100)} min={5}  max={400} onChange={(v) => setMultipliers((m) => ({ ...m, density: v / 100 }))}     valueLabel={multipliers.density.toFixed(2) + "×"} />
+              <RowSlider label="size"        value={Math.round(multipliers.size      * 100)} min={5}  max={400} onChange={(v) => setMultipliers((m) => ({ ...m, size: v / 100 }))}        valueLabel={multipliers.size.toFixed(2) + "×"} />
+              <RowSlider label="size spread" value={Math.round(multipliers.sizeSpread * 100)} min={0}  max={400} onChange={(v) => setMultipliers((m) => ({ ...m, sizeSpread: v / 100 }))} valueLabel={multipliers.sizeSpread.toFixed(2) + "×"} />
+              <RowSlider label="alignment"   value={Math.round(multipliers.alignment * 100)} min={0}  max={400} onChange={(v) => setMultipliers((m) => ({ ...m, alignment: v / 100 }))}   valueLabel={multipliers.alignment.toFixed(2) + "×"} />
+              <RowSlider label="rotate°"     value={multipliers.rotateDeg}                    min={-180} max={180} onChange={(v) => setMultipliers((m) => ({ ...m, rotateDeg: v }))}        valueLabel={multipliers.rotateDeg + "°"} />
+              <RowSlider label="clustering"  value={Math.round(multipliers.clustering * 100)} min={0}  max={400} onChange={(v) => setMultipliers((m) => ({ ...m, clustering: v / 100 }))}  valueLabel={multipliers.clustering.toFixed(2) + "×"} />
+              <RowSlider label="opacity"     value={Math.round(multipliers.opacity   * 100)} min={5}  max={400} onChange={(v) => setMultipliers((m) => ({ ...m, opacity: v / 100 }))}     valueLabel={multipliers.opacity.toFixed(2) + "×"} />
+              <SeedRow value={analyzeSeed} onChange={setAnalyzeSeed} />
+              <div style={{ display: "flex", gap: 4 }}>
+                <button onClick={onStampFromFingerprint} disabled={busy} style={{ ...styles.smBtn, background: "#1473e6", color: "white", border: "1px solid #1473e6" }}>
+                  Stamp from fingerprint
+                </button>
+                <button onClick={() => setMultipliers(DEFAULT_MULTIPLIERS)} style={styles.smBtn}>reset</button>
+              </div>
+            </>
+          )}
+        </div>
+      </Section>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        {state.ops.length === 0 && (
-          <div style={{ color: "#555", fontSize: 11, fontStyle: "italic" }}>
-            {state.source ? "no ops yet — add one above" : "ingest a tip to start"}
+      <Section title="Op Stack">
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ display: "flex", gap: 4 }}>
+            <select value={addPick} onChange={(e) => setAddPick(e.target.value as OpKind)} style={selectStyle} disabled={!state.source}>
+              {OP_KINDS.map((k) => <option key={k} value={k}>{opMeta(k).label}</option>)}
+            </select>
+            <button onClick={onAdd} disabled={busy || !state.source} style={styles.smBtn}>+ add</button>
           </div>
-        )}
-        {state.ops.map((op, i) => (
-          <OpRow
-            key={op.id} op={op} index={i} total={state.ops.length}
-            onToggle={() => setState((s) => toggleOp(s, op.id))}
-            onRemove={() => setState((s) => removeOp(s, op.id))}
-            onMoveUp={() => setState((s) => moveOp(s, op.id, Math.max(0, i - 1)))}
-            onMoveDown={() => setState((s) => moveOp(s, op.id, Math.min(state.ops.length - 1, i + 1)))}
-            onParamChange={(name, value) => setState((s) => updateOpParams(s, op.id, { [name]: value }))}
-          />
-        ))}
-      </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {state.ops.length === 0 && (
+              <div style={{ color: "#555", fontSize: 11, fontStyle: "italic" }}>
+                {state.source ? "no ops yet — add one above" : "ingest a source first"}
+              </div>
+            )}
+            {state.ops.map((op, i) => (
+              <OpRow
+                key={op.id} op={op} index={i} total={state.ops.length}
+                onToggle={() => setState((s) => toggleOp(s, op.id))}
+                onRemove={() => setState((s) => removeOp(s, op.id))}
+                onMoveUp={() => setState((s) => moveOp(s, op.id, Math.max(0, i - 1)))}
+                onMoveDown={() => setState((s) => moveOp(s, op.id, Math.min(state.ops.length - 1, i + 1)))}
+                onParamChange={(name, value) => setState((s) => updateOpParams(s, op.id, { [name]: value }))}
+              />
+            ))}
+          </div>
+        </div>
+      </Section>
 
       {status && (
         <div style={{ fontSize: 11, color: status.kind === "err" ? "#ff8080" : status.kind === "ok" ? "#80e080" : "#bbb" }}>
           {status.text}
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------- helpers ----------
+
+function RowSlider(props: { label: string; value: number; min: number; max: number; step?: number; onChange: (v: number) => void; valueLabel?: string }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "65px 1fr 50px", gap: 4, alignItems: "center", fontSize: 11 }}>
+      <span style={{ color: "#888" }}>{props.label}</span>
+      <input type="range" min={props.min} max={props.max} step={props.step ?? 1} value={props.value}
+             onChange={(e) => props.onChange(Number(e.target.value))} />
+      <span style={{ color: "#bbb", textAlign: "right" }}>{props.valueLabel ?? props.value}</span>
+    </div>
+  );
+}
+
+function SeedRow(props: { value: number; onChange: (v: number) => void }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "65px 1fr auto", gap: 4, alignItems: "center", fontSize: 11 }}>
+      <span style={{ color: "#888" }}>seed</span>
+      <input type="number" value={props.value}
+             onChange={(e) => props.onChange(Number(e.target.value) || 0)}
+             style={styles.numInput} />
+      <button onClick={() => props.onChange(Math.floor(Math.random() * 1e6))}
+              style={{ ...styles.smBtn, padding: "2px 6px", fontSize: 10, flex: "0 0 auto" }}>🎲</button>
     </div>
   );
 }
@@ -524,18 +453,13 @@ function OpRow(props: {
 }) {
   const meta = opMeta(props.op.kind);
   return (
-    <div style={{
-      background: props.op.enabled ? "#2a2a2a" : "#1c1c1c",
-      border: "1px solid #3a3a3a",
-      borderRadius: 4, padding: 6, fontSize: 11,
-      opacity: props.op.enabled ? 1 : 0.55,
-    }}>
+    <div style={{ background: props.op.enabled ? "#2a2a2a" : "#1c1c1c", border: "1px solid #3a3a3a", borderRadius: 4, padding: 6, fontSize: 11, opacity: props.op.enabled ? 1 : 0.55 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-        <input type="checkbox" checked={props.op.enabled} onChange={props.onToggle} title="enable/disable" />
+        <input type="checkbox" checked={props.op.enabled} onChange={props.onToggle} />
         <span style={{ flex: 1, fontWeight: 600 }}>{props.index + 1}. {meta.label}</span>
-        <button onClick={props.onMoveUp}  disabled={props.index === 0}                 style={iconBtn} title="move up">↑</button>
-        <button onClick={props.onMoveDown} disabled={props.index === props.total - 1}  style={iconBtn} title="move down">↓</button>
-        <button onClick={props.onRemove}  style={iconBtn} title="remove">✕</button>
+        <button onClick={props.onMoveUp}   disabled={props.index === 0}                style={iconBtn}>↑</button>
+        <button onClick={props.onMoveDown} disabled={props.index === props.total - 1}  style={iconBtn}>↓</button>
+        <button onClick={props.onRemove}  style={iconBtn}>✕</button>
       </div>
       {Object.keys(props.op.params).length > 0 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
@@ -562,12 +486,7 @@ function ParamInput(props: { name: string; value: any; onChange: (v: any) => voi
     return (
       <label style={{ display: "flex", gap: 4, alignItems: "center", color: "#bbb" }}>
         <span style={{ color: "#888" }}>{props.name}</span>
-        <input
-          type="number"
-          value={props.value}
-          onChange={(e) => props.onChange(Number(e.target.value))}
-          style={{ ...numInput, width: 64 }}
-        />
+        <input type="number" value={props.value} onChange={(e) => props.onChange(Number(e.target.value))} style={{ ...styles.numInput, width: 64 }} />
       </label>
     );
   }
@@ -575,38 +494,19 @@ function ParamInput(props: { name: string; value: any; onChange: (v: any) => voi
     return (
       <label style={{ display: "flex", gap: 4, alignItems: "center", color: "#bbb" }}>
         <span style={{ color: "#888" }}>{props.name}</span>
-        <input
-          type="text"
-          value={props.value}
-          onChange={(e) => props.onChange(e.target.value)}
-          style={{ ...numInput, width: 80 }}
-        />
+        <input type="text" value={props.value} onChange={(e) => props.onChange(e.target.value)} style={{ ...styles.numInput, width: 80 }} />
       </label>
     );
   }
   return null;
 }
 
-const smBtn: React.CSSProperties = {
-  background: "#3a3a3a", color: "#e6e6e6",
-  border: "1px solid #555", borderRadius: 4, padding: "5px 8px",
-  fontSize: 11, cursor: "pointer", flex: 1, minWidth: 0,
-};
-const primaryBtn: React.CSSProperties = {
-  background: "#1473e6", color: "white",
-  border: "none", borderRadius: 4, padding: "6px 10px",
-  fontSize: 12, fontWeight: 600, cursor: "pointer", flex: 1,
-};
 const iconBtn: React.CSSProperties = {
   background: "transparent", color: "#bbb",
   border: "1px solid #444", borderRadius: 3, padding: "0 6px",
   fontSize: 11, cursor: "pointer", lineHeight: "18px",
 };
-const select: React.CSSProperties = {
+const selectStyle: React.CSSProperties = {
   flex: 1, background: "#1c1c1c", color: "#e6e6e6",
   border: "1px solid #555", borderRadius: 4, padding: "4px 6px", fontSize: 11,
-};
-const numInput: React.CSSProperties = {
-  background: "#1c1c1c", color: "#e6e6e6",
-  border: "1px solid #555", borderRadius: 3, padding: "2px 4px", fontSize: 11,
 };
