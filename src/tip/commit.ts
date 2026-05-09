@@ -15,6 +15,7 @@
 
 import { action, app, imaging } from "photoshop";
 import { bp, bpSilent, ensureBrushTool, executeAsModal, getActiveDoc } from "../services/photoshop";
+import { resize } from "./processing/resize";
 import type { PixelBuffer } from "./types";
 
 export interface CommitResult {
@@ -68,17 +69,33 @@ async function runCommit(buf: PixelBuffer, desiredName?: string): Promise<Commit
   const doc = getActiveDoc();
   let layerId: number | null = null;
 
+  // The user's doc is our scratch surface. If our buf is larger than the doc,
+  // only the doc-sized chunk would be captured by defineBrush. Downsample to
+  // fit (preserving aspect) — much better than silently clipping.
+  let writeBuf = buf;
+  let downsampled = false;
+  if (buf.width > doc.width || buf.height > doc.height) {
+    const scale = Math.min(doc.width / buf.width, doc.height / buf.height);
+    const newW = Math.max(1, Math.floor(buf.width * scale));
+    const newH = Math.max(1, Math.floor(buf.height * scale));
+    writeBuf = resize(buf, { width: newW, height: newH });
+    downsampled = true;
+  }
+
   try {
     layerId = await makeTipLayer();
-    await writePixelsToLayer(doc.id, layerId, buf);
-    await selectRect(0, 0, buf.width, buf.height);
+    await writePixelsToLayer(doc.id, layerId, writeBuf);
+    await selectRect(0, 0, writeBuf.width, writeBuf.height);
     await ensureBrushTool();
     await defineBrush(name);
 
     const actualName = await readActiveBrushName(name);
-    return { brushName: actualName, widthPx: buf.width, heightPx: buf.height };
+    return {
+      brushName: actualName + (downsampled ? ` (downsampled to ${writeBuf.width}×${writeBuf.height} to fit doc)` : ""),
+      widthPx: writeBuf.width,
+      heightPx: writeBuf.height,
+    };
   } finally {
-    // Always clean up: delete the tip layer + deselect, even on error.
     if (layerId !== null) await deleteLayer(layerId).catch(() => { /* swallow */ });
     await deselect().catch(() => { /* swallow */ });
   }
