@@ -189,24 +189,45 @@ export async function selectLivePreviewBrush(): Promise<string> {
 // Apply primary dynamics (Stipple-ish recipe).
 // Sets the *current brush preset's* settings via currentToolOptions.
 // ---------------------------------------------------------------------------
-// Minimal: just bump spacing. If this works, we know the target ref is right
-// and the failure is in one of the inner sub-descriptors.
+// Minimal: just bump spacing. Uses get→merge→set workaround.
 export async function applyMinimalSpacingOnly(): Promise<void> {
   await executeAsModal("BrushBuddy: spacing only", async () => {
     await ensureBrushTool();
-    await bp([{
-      _obj: "set",
-      _target: [
-        { _ref: "property", _property: "currentToolOptions" },
-        { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
-      ],
-      to: {
-        _obj: "currentToolOptions",
-        spacing: { _unit: "percentUnit", _value: 180 },
-      },
-      _options: { dialogOptions: "dontDisplay" },
-    }]);
+    await patchToolOptions({
+      spacing: { _unit: "percentUnit", _value: 180 },
+    });
   });
+}
+
+// Read current tool options (the descriptor PS uses for the active brush).
+async function getToolOptions(): Promise<any> {
+  const r = await action.batchPlay([{
+    _obj: "get",
+    _target: [
+      { _ref: "property", _property: "currentToolOptions" },
+      { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
+    ],
+    _options: { dialogOptions: "dontDisplay" },
+  }], { synchronousExecution: true });
+  return r?.[0]?.currentToolOptions;
+}
+
+// Merge a patch into current tool options and SET the whole thing back. PS's
+// `set currentToolOptions` rejects partial descriptors with result=-128, but
+// accepts a fully-formed one. This get→merge→set pattern is the workaround.
+async function patchToolOptions(patch: any): Promise<void> {
+  const current = await getToolOptions();
+  if (!current) throw new Error("could not read current tool options");
+  const merged = { ...current, ...patch, _obj: "currentToolOptions" };
+  await bp([{
+    _obj: "set",
+    _target: [
+      { _ref: "property", _property: "currentToolOptions" },
+      { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
+    ],
+    to: merged,
+    _options: { dialogOptions: "dontDisplay" },
+  }]);
 }
 
 // Helper: build a brush variation ($brVr) sub-object — used for size/opacity/
@@ -223,59 +244,39 @@ function brVr(jitter: number, opts: { control?: number; fadeStep?: number; minim
   };
 }
 
-// Shape Dynamics only — uses the discovered $szVr key.
+// Shape Dynamics only — uses the discovered $szVr key + get→merge→set.
 export async function applyShapeDynamicsOnly(): Promise<void> {
   await executeAsModal("BrushBuddy: shape dynamics only", async () => {
     await ensureBrushTool();
-    await bp([{
-      _obj: "set",
-      _target: [
-        { _ref: "property", _property: "currentToolOptions" },
-        { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
-      ],
-      to: {
-        _obj: "currentToolOptions",
-        useTipDynamics: true,
-        $szVr: brVr(25),
-        minimumDiameter: { _unit: "percentUnit", _value: 30 },
-      },
-      _options: { dialogOptions: "dontDisplay" },
-    }]);
+    await patchToolOptions({
+      useTipDynamics: true,
+      $szVr: brVr(25),
+      minimumDiameter: { _unit: "percentUnit", _value: 30 },
+    });
   });
 }
 
 export async function applyStippleDynamics(): Promise<void> {
   await executeAsModal("BrushBuddy: apply dynamics", async () => {
     await ensureBrushTool();
-    // Real schema: every panel is FLAT on currentToolOptions, gated by use*
-    // booleans. Dynamic params use Adobe's internal $-codes wrapped in $brVr.
-    await bp([{
-      _obj: "set",
-      _target: [
-        { _ref: "property", _property: "currentToolOptions" },
-        { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
-      ],
-      to: {
-        _obj: "currentToolOptions",
-        // Shape Dynamics — size jitter w/ minimum diameter floor.
-        useTipDynamics: true,
-        $szVr: brVr(25),
-        minimumDiameter: { _unit: "percentUnit", _value: 30 },
-        angleDynamics: brVr(0),
-        roundnessDynamics: brVr(0),
-        // Scattering — visible stamps, both axes, count jitter.
-        useScatter: true,
-        spacing: { _unit: "percentUnit", _value: 180 },
-        bothAxes: true,
-        count: 1,
-        scatterDynamics: brVr(60),
-        countDynamics: brVr(40),
-        // Transfer (Paint Dynamics) — opacity jitter w/ minimum.
-        usePaintDynamics: true,
-        $opVr: brVr(30, { minimum: 30 }),
-      },
-      _options: { dialogOptions: "dontDisplay" },
-    }]);
+    await patchToolOptions({
+      // Shape Dynamics — size jitter w/ minimum diameter floor.
+      useTipDynamics: true,
+      $szVr: brVr(25),
+      minimumDiameter: { _unit: "percentUnit", _value: 30 },
+      angleDynamics: brVr(0),
+      roundnessDynamics: brVr(0),
+      // Scattering — visible stamps, both axes, count jitter.
+      useScatter: true,
+      spacing: { _unit: "percentUnit", _value: 180 },
+      bothAxes: true,
+      count: 1,
+      scatterDynamics: brVr(60),
+      countDynamics: brVr(40),
+      // Transfer (Paint Dynamics) — opacity jitter w/ minimum.
+      usePaintDynamics: true,
+      $opVr: brVr(30, { minimum: 30 }),
+    });
   });
 }
 
@@ -285,31 +286,23 @@ export async function applyStippleDynamics(): Promise<void> {
 export async function applyDualBrush(): Promise<void> {
   await executeAsModal("BrushBuddy: apply dual brush", async () => {
     await ensureBrushTool();
-    // Dual Brush is its own _obj: "dualBrush" sub-object with the same flat
-    // shape as currentToolOptions. The secondary `brush` is left untouched —
-    // PS keeps the prior choice. To set a specific secondary tip we'd need to
-    // pass a full sampledBrush descriptor (next iteration).
-    await bp([{
-      _obj: "set",
-      _target: [
-        { _ref: "property", _property: "currentToolOptions" },
-        { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
-      ],
-      to: {
-        _obj: "currentToolOptions",
-        dualBrush: {
-          _obj: "dualBrush",
-          useDualBrush: true,
-          blendMode: { _enum: "blendMode", _value: "multiply" },
-          spacing: { _unit: "percentUnit", _value: 25 },
-          count: 2,
-          bothAxes: false,
-          scatterDynamics: brVr(50),
-          countDynamics: brVr(0),
-        },
+    // Merge with current to preserve the existing secondary brush descriptor;
+    // we only override the dual-brush flags.
+    const current = await getToolOptions();
+    const currentDual = current?.dualBrush ?? { _obj: "dualBrush" };
+    await patchToolOptions({
+      dualBrush: {
+        ...currentDual,
+        _obj: "dualBrush",
+        useDualBrush: true,
+        blendMode: { _enum: "blendMode", _value: "multiply" },
+        spacing: { _unit: "percentUnit", _value: 25 },
+        count: 2,
+        bothAxes: false,
+        scatterDynamics: brVr(50),
+        countDynamics: brVr(0),
       },
-      _options: { dialogOptions: "dontDisplay" },
-    }]);
+    });
   });
 }
 
