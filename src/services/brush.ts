@@ -44,17 +44,12 @@ export async function defineBrushFromSelection(name: string = LIVE_PREVIEW_NAME)
       throw new Error("Make a rectangular selection first.");
     }
     // Snapshot brush list before, define, snapshot after, diff to find the new one.
-    // Optional: snapshot brush list to detect if PS renamed our preset.
-    // listBrushNames may fail on some PS builds — that's fine, we trust the
-    // name parameter (PS 2025 honors it).
-    const before = await listBrushNames().catch(() => [] as string[]);
+    // PS 2025 honors the `name` parameter — verified by user's earlier log.
+    // No need to snapshot the brush list (which used a probe that pops a
+    // dialog on some shapes).
     await bp([{ _obj: "defineBrush", name, _options: { dialogOptions: "dontDisplay" } }]);
-    const after = await listBrushNames().catch(() => [] as string[]);
-    const beforeSet = new Set(before);
-    const newOnes = after.filter((n) => !beforeSet.has(n));
-    const actual = newOnes.find((n) => n === name) ?? newOnes[newOnes.length - 1] ?? name;
-    LAST_DEFINED_BRUSH_NAME = actual;
-    return actual;
+    LAST_DEFINED_BRUSH_NAME = name;
+    return name;
   });
 }
 
@@ -220,12 +215,10 @@ export async function applyMinimalSpacingOnly(): Promise<void> {
     }]);
     await bp([{
       _obj: "set",
-      _target: [{
-        _ref: [
-          { _ref: "property", _property: "currentToolOptions" },
-          { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
-        ],
-      }],
+      _target: [
+        { _ref: "property", _property: "currentToolOptions" },
+        { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
+      ],
       to: {
         _obj: "currentToolOptions",
         spacing: { _unit: "percentUnit", _value: 180 },
@@ -259,12 +252,10 @@ export async function applyShapeDynamicsOnly(): Promise<void> {
     }]);
     await bp([{
       _obj: "set",
-      _target: [{
-        _ref: [
-          { _ref: "property", _property: "currentToolOptions" },
-          { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
-        ],
-      }],
+      _target: [
+        { _ref: "property", _property: "currentToolOptions" },
+        { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
+      ],
       to: {
         _obj: "currentToolOptions",
         useTipDynamics: true,
@@ -287,12 +278,10 @@ export async function applyStippleDynamics(): Promise<void> {
     // booleans. Dynamic params use Adobe's internal $-codes wrapped in $brVr.
     await bp([{
       _obj: "set",
-      _target: [{
-        _ref: [
-          { _ref: "property", _property: "currentToolOptions" },
-          { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
-        ],
-      }],
+      _target: [
+        { _ref: "property", _property: "currentToolOptions" },
+        { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
+      ],
       to: {
         _obj: "currentToolOptions",
         // Shape Dynamics — size jitter w/ minimum diameter floor.
@@ -333,12 +322,10 @@ export async function applyDualBrush(): Promise<void> {
     // pass a full sampledBrush descriptor (next iteration).
     await bp([{
       _obj: "set",
-      _target: [{
-        _ref: [
-          { _ref: "property", _property: "currentToolOptions" },
-          { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
-        ],
-      }],
+      _target: [
+        { _ref: "property", _property: "currentToolOptions" },
+        { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
+      ],
       to: {
         _obj: "currentToolOptions",
         dualBrush: {
