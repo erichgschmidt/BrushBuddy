@@ -118,6 +118,7 @@ export async function debugDumpCurrentToolOptions(): Promise<any> {
       }]);
     } catch { /* ignore */ }
 
+    // Only run the probe we know works — the others spam modal error dialogs.
     const attempts: { label: string; cmd: any[] }[] = [
       {
         label: "property currentToolOptions of application",
@@ -127,30 +128,6 @@ export async function debugDumpCurrentToolOptions(): Promise<any> {
             { _ref: "property", _property: "currentToolOptions" },
             { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
           ],
-          _options: { dialogOptions: "dontDisplay" },
-        }],
-      },
-      {
-        label: "currentToolOptions targetEnum",
-        cmd: [{
-          _obj: "get",
-          _target: [{ _ref: "currentToolOptions", _enum: "ordinal", _value: "targetEnum" }],
-          _options: { dialogOptions: "dontDisplay" },
-        }],
-      },
-      {
-        label: "paintbrushTool targetEnum",
-        cmd: [{
-          _obj: "get",
-          _target: [{ _ref: "paintbrushTool", _enum: "ordinal", _value: "targetEnum" }],
-          _options: { dialogOptions: "dontDisplay" },
-        }],
-      },
-      {
-        label: "brush targetEnum",
-        cmd: [{
-          _obj: "get",
-          _target: [{ _ref: "brush", _enum: "ordinal", _value: "targetEnum" }],
           _options: { dialogOptions: "dontDisplay" },
         }],
       },
@@ -258,7 +235,21 @@ export async function applyMinimalSpacingOnly(): Promise<void> {
   });
 }
 
-// Minimal Shape Dynamics only — adds one panel.
+// Helper: build a brush variation ($brVr) sub-object — used for size/opacity/
+// flow/scatter/count/angle/roundness dynamics. Discovered from PS's own dump.
+//   bVTy = control mode (0=Off, 1=Fade, 2=PenPressure, 3=PenTilt, 4=StylusWheel,
+//          5=Rotation, 6=InitialDirection, 7=Direction, 8=Random)  [empirical]
+function brVr(jitter: number, opts: { control?: number; fadeStep?: number; minimum?: number } = {}): any {
+  return {
+    _obj: "$brVr",
+    $bVTy: opts.control ?? 0,
+    $fStp: opts.fadeStep ?? 25,
+    jitter: { _unit: "percentUnit", _value: jitter },
+    minimum: { _unit: "percentUnit", _value: opts.minimum ?? 0 },
+  };
+}
+
+// Shape Dynamics only — uses the discovered $szVr key.
 export async function applyShapeDynamicsOnly(): Promise<void> {
   await executeAsModal("BrushBuddy: shape dynamics only", async () => {
     await bp([{
@@ -276,11 +267,9 @@ export async function applyShapeDynamicsOnly(): Promise<void> {
       }],
       to: {
         _obj: "currentToolOptions",
-        shapeDynamics: {
-          _obj: "shapeDynamics",
-          useTipDynamics: true,
-          sizeDynamics: 25,
-        },
+        useTipDynamics: true,
+        $szVr: brVr(25),
+        minimumDiameter: { _unit: "percentUnit", _value: 30 },
       },
       _options: { dialogOptions: "dontDisplay" },
     }]);
@@ -289,13 +278,13 @@ export async function applyShapeDynamicsOnly(): Promise<void> {
 
 export async function applyStippleDynamics(): Promise<void> {
   await executeAsModal("BrushBuddy: apply dynamics", async () => {
-    // Ensure brush tool is active — PS gates `set` on currentToolOptions by tool context.
     await bp([{
       _obj: "select",
       _target: [{ _ref: "paintbrushTool" }],
       _options: { dialogOptions: "dontDisplay" },
     }]);
-    // Standard target syntax for the active tool's options.
+    // Real schema: every panel is FLAT on currentToolOptions, gated by use*
+    // booleans. Dynamic params use Adobe's internal $-codes wrapped in $brVr.
     await bp([{
       _obj: "set",
       _target: [{
@@ -306,29 +295,22 @@ export async function applyStippleDynamics(): Promise<void> {
       }],
       to: {
         _obj: "currentToolOptions",
+        // Shape Dynamics — size jitter w/ minimum diameter floor.
+        useTipDynamics: true,
+        $szVr: brVr(25),
+        minimumDiameter: { _unit: "percentUnit", _value: 30 },
+        angleDynamics: brVr(0),
+        roundnessDynamics: brVr(0),
+        // Scattering — visible stamps, both axes, count jitter.
+        useScatter: true,
         spacing: { _unit: "percentUnit", _value: 180 },
-        shapeDynamics: {
-          _obj: "shapeDynamics",
-          useTipDynamics: true,
-          sizeDynamics: 25,
-          minimumDiameter: { _unit: "percentUnit", _value: 30 },
-          angleDynamics: 0,
-          roundnessDynamics: 0,
-        },
-        scatter: {
-          _obj: "scatter",
-          useScatter: true,
-          bothAxes: true,
-          scatterDynamics: 60,
-          count: 1,
-          countDynamics: 40,
-        },
-        transfer: {
-          _obj: "transfer",
-          useTransfer: true,
-          opacityDynamics: 30,
-          minimumOpacity: 30,
-        },
+        bothAxes: true,
+        count: 1,
+        scatterDynamics: brVr(60),
+        countDynamics: brVr(40),
+        // Transfer (Paint Dynamics) — opacity jitter w/ minimum.
+        usePaintDynamics: true,
+        $opVr: brVr(30, { minimum: 30 }),
       },
       _options: { dialogOptions: "dontDisplay" },
     }]);
@@ -345,6 +327,10 @@ export async function applyDualBrush(): Promise<void> {
       _target: [{ _ref: "paintbrushTool" }],
       _options: { dialogOptions: "dontDisplay" },
     }]);
+    // Dual Brush is its own _obj: "dualBrush" sub-object with the same flat
+    // shape as currentToolOptions. The secondary `brush` is left untouched —
+    // PS keeps the prior choice. To set a specific secondary tip we'd need to
+    // pass a full sampledBrush descriptor (next iteration).
     await bp([{
       _obj: "set",
       _target: [{
@@ -360,8 +346,10 @@ export async function applyDualBrush(): Promise<void> {
           useDualBrush: true,
           blendMode: { _enum: "blendMode", _value: "multiply" },
           spacing: { _unit: "percentUnit", _value: 25 },
-          scatter: 50,
           count: 2,
+          bothAxes: false,
+          scatterDynamics: brVr(50),
+          countDynamics: brVr(0),
         },
       },
       _options: { dialogOptions: "dontDisplay" },
