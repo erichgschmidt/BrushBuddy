@@ -40,7 +40,9 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
     if (!preview) { cvs.width = 1; cvs.height = 1; return; }
     cvs.width = preview.width; cvs.height = preview.height;
     const ctx = cvs.getContext("2d"); if (!ctx) return;
-    const img = new ImageData(new Uint8ClampedArray(preview.data), preview.width, preview.height);
+    // UXP doesn't expose `ImageData` as a global — use ctx.createImageData and copy.
+    const img = ctx.createImageData(preview.width, preview.height);
+    img.data.set(preview.data);
     ctx.putImageData(img, 0, 0);
   }, [preview]);
 
