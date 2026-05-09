@@ -3,7 +3,7 @@
 // → commit (push back into PS as a new brush).
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ingestFromSelection } from "../tip/ingest";
+import { ingestFromSelection, ingestFromActiveLayer, ingestFromFile } from "../tip/ingest";
 import {
   Op, OpKind, OpStackState, addOp, defaultParamsFor, opMeta, removeOp,
   runStackMemoized, setSource, toggleOp, updateOpParams, moveOp,
@@ -50,10 +50,13 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
     }
   }, [preview]);
 
-  async function onIngest() {
+  async function onIngest(source: "selection" | "layer" | "file") {
     setBusy(true); setStatus({ text: "reading pixels…", kind: "info" });
     try {
-      const r = await ingestFromSelection();
+      const r =
+        source === "selection" ? await ingestFromSelection() :
+        source === "layer"     ? await ingestFromActiveLayer() :
+                                 await ingestFromFile();
       setState((s) => setSource(s, r.buffer));
       setStatus({ text: `ingested: ${r.sourceLabel}`, kind: "ok" });
     } catch (e: any) {
@@ -80,10 +83,12 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      <div style={{ display: "flex", gap: 6 }}>
-        <button onClick={onIngest} disabled={busy} style={btn}>Ingest from selection</button>
-        <button onClick={onCommit} disabled={busy || !preview} style={primaryBtn}>Commit as brush</button>
+      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+        <button onClick={() => onIngest("selection")} disabled={busy} style={smBtn}>from selection</button>
+        <button onClick={() => onIngest("layer")}     disabled={busy} style={smBtn}>from layer</button>
+        <button onClick={() => onIngest("file")}      disabled={busy} style={smBtn}>from file…</button>
       </div>
+      <button onClick={onCommit} disabled={busy || !preview} style={primaryBtn}>Commit as brush</button>
 
       <div style={{
         background: "repeating-conic-gradient(#222 0 25%, #333 0 50%) 0 0/16px 16px",
@@ -205,10 +210,10 @@ function ParamInput(props: { name: string; value: any; onChange: (v: any) => voi
   return null;
 }
 
-const btn: React.CSSProperties = {
+const smBtn: React.CSSProperties = {
   background: "#3a3a3a", color: "#e6e6e6",
-  border: "1px solid #555", borderRadius: 4, padding: "6px 10px",
-  fontSize: 12, cursor: "pointer", flex: 1,
+  border: "1px solid #555", borderRadius: 4, padding: "5px 8px",
+  fontSize: 11, cursor: "pointer", flex: 1, minWidth: 0,
 };
 const primaryBtn: React.CSSProperties = {
   background: "#1473e6", color: "white",
