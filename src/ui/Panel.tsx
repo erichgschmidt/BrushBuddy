@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { captureFromSelection, readTipProps, setTipProps, getLastBrushName, TipProps } from "../services/brush";
+import { TipEditor } from "./TipEditor";
 
 export function Panel() {
   const [busy, setBusy] = useState(false);
   const [brushName, setBrushName] = useState<string | null>(null);
   const [status, setStatus] = useState<{ text: string; kind: "info" | "ok" | "err" } | null>(null);
+  const [showEditor, setShowEditor] = useState(false);
   const [props, setProps] = useState<TipProps>({
     spacing: 25, diameter: 50, angle: 0, roundness: 100, hardness: 100, flipX: false, flipY: false,
   });
@@ -67,6 +69,23 @@ export function Panel() {
           <Toggle label="Flip Y" value={props.flipY!} onChange={(v) => commit({ ...props, flipY: v })} />
         </div>
       </div>
+
+      <div style={{ borderTop: "1px solid #3a3a3a", paddingTop: 8 }}>
+        <button
+          onClick={() => setShowEditor((v) => !v)}
+          style={{
+            background: "transparent", border: "1px solid #444", color: "#bbb",
+            borderRadius: 4, padding: "6px 10px", fontSize: 12, width: "100%", cursor: "pointer",
+          }}
+        >
+          {showEditor ? "▼ Tip Editor" : "▶ Tip Editor (op stack)"}
+        </button>
+      </div>
+      {showEditor && (
+        <div style={{ borderTop: "1px solid #2a2a2a", paddingTop: 8 }}>
+          <TipEditor onCommitted={(name) => { setBrushName(name); }} />
+        </div>
+      )}
 
       <div style={{ borderTop: "1px solid #3a3a3a", paddingTop: 8, fontSize: 11, color: "#888", lineHeight: 1.4 }}>
         For dynamics (Shape Dynamics, Scattering, Texture, Transfer, Dual Brush, etc.), use Photoshop's Brush Settings panel (<kbd>F5</kbd>). PS's preview area shows live results.

@@ -7,6 +7,7 @@
     "build": "webpack --mode=production",
     "watch": "webpack --mode=development --watch",
     "typecheck": "tsc --noEmit",
+    "test": "tsc --module commonjs --target ES2020 --moduleResolution node --outDir dist/tip-test --rootDir src src/tip/processing.test.ts && node dist/tip-test/tip/processing.test.js",
     "package": "node scripts/package.mjs"
   },
   "devDependencies": {
