@@ -21,23 +21,50 @@ export async function executeAsModal<T>(name: string, fn: () => Promise<T>): Pro
 export async function bp(commands: any[], options: any = {}): Promise<any[]> {
   try {
     const results = await action.batchPlay(commands, options);
-    // Some PS errors don't throw; they appear as a `message` on the result.
     for (let i = 0; i < results.length; i++) {
       const r = results[i];
-      if (r && typeof r === "object" && (r as any).message && (r as any).number) {
-        const obj = (commands[i] as any)?._obj ?? "(no _obj)";
-        throw new Error(`PS rejected _obj="${obj}": ${(r as any).message}`);
+      if (r && typeof r === "object") {
+        // PS error response shapes:
+        //   { _obj: "error", message: "...", result: -128 }   (most common)
+        //   { message: "...", number: N }                     (older form)
+        const isErr =
+          (r as any)._obj === "error" ||
+          ((r as any).message && ((r as any).number || (r as any).result));
+        if (isErr) {
+          const obj = (commands[i] as any)?._obj ?? "(no _obj)";
+          const msg = (r as any).message || `result=${(r as any).result}`;
+          throw new Error(`PS rejected _obj="${obj}": ${msg}`);
+        }
       }
     }
     return results;
   } catch (e: any) {
-    // If the error doesn't already carry context, prepend the first _obj.
     const obj = (commands[0] as any)?._obj ?? "(no _obj)";
     if (e && typeof e === "object" && e.message && !String(e.message).includes("_obj=")) {
       e.message = `[${obj}] ${e.message}`;
     }
     throw e;
   }
+}
+
+/** Like bp() but swallows PS errors silently — for best-effort sub-steps. */
+export async function bpSilent(commands: any[], options: any = {}): Promise<void> {
+  try { await bp(commands, options); } catch { /* ignore */ }
+}
+
+/** Returns true if the brush tool is the currently active tool. */
+export function isBrushToolActive(): boolean {
+  try { return app.currentTool?.id === "paintbrushTool"; } catch { return false; }
+}
+
+/** Idempotent: only selects the brush tool if it isn't already active. */
+export async function ensureBrushTool(): Promise<void> {
+  if (isBrushToolActive()) return;
+  await bpSilent([{
+    _obj: "select",
+    _target: [{ _ref: "paintbrushTool" }],
+    _options: { dialogOptions: "dontDisplay" },
+  }]);
 }
 
 export { app, action };

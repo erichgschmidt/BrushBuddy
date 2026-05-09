@@ -7,7 +7,7 @@
 // Naming convention: every volatile artifact is namespaced "BrushBuddy ..." so
 // we can find and prune them on session end.
 
-import { bp, executeAsModal, getActiveDoc } from "./photoshop";
+import { bp, bpSilent, ensureBrushTool, executeAsModal, getActiveDoc } from "./photoshop";
 import { action } from "photoshop";
 
 export const LIVE_PREVIEW_NAME = "BrushBuddy Live Preview";
@@ -104,14 +104,7 @@ export async function debugListBrushes(): Promise<{ count: number; first10: stri
  */
 export async function debugDumpCurrentToolOptions(): Promise<any> {
   return await executeAsModal("BrushBuddy: dump tool options", async () => {
-    // Brush tool active first.
-    try {
-      await bp([{
-        _obj: "select",
-        _target: [{ _ref: "paintbrushTool" }],
-        _options: { dialogOptions: "dontDisplay" },
-      }]);
-    } catch { /* ignore */ }
+    await ensureBrushTool();
 
     // Only run the probe we know works — the others spam modal error dialogs.
     const attempts: { label: string; cmd: any[] }[] = [
@@ -173,22 +166,14 @@ export async function captureTipFromSelection(name: string = LIVE_PREVIEW_NAME):
 // ---------------------------------------------------------------------------
 export async function selectBrushTool(): Promise<void> {
   await executeAsModal("BrushBuddy: select brush tool", async () => {
-    await bp([{
-      _obj: "select",
-      _target: [{ _ref: "paintbrushTool" }],
-      _options: { dialogOptions: "dontDisplay" },
-    }]);
+    await ensureBrushTool();
   });
 }
 
 export async function selectLivePreviewBrush(): Promise<string> {
   return await executeAsModal("BrushBuddy: select live preview", async () => {
     // Brush tool must be active first.
-    await bp([{
-      _obj: "select",
-      _target: [{ _ref: "paintbrushTool" }],
-      _options: { dialogOptions: "dontDisplay" },
-    }]);
+    await ensureBrushTool();
     const target = LAST_DEFINED_BRUSH_NAME ?? LIVE_PREVIEW_NAME;
     // Recorded form from PS 2025: select brush by ref+name.
     await bp([{
@@ -208,11 +193,7 @@ export async function selectLivePreviewBrush(): Promise<string> {
 // and the failure is in one of the inner sub-descriptors.
 export async function applyMinimalSpacingOnly(): Promise<void> {
   await executeAsModal("BrushBuddy: spacing only", async () => {
-    await bp([{
-      _obj: "select",
-      _target: [{ _ref: "paintbrushTool" }],
-      _options: { dialogOptions: "dontDisplay" },
-    }]);
+    await ensureBrushTool();
     await bp([{
       _obj: "set",
       _target: [
@@ -245,11 +226,7 @@ function brVr(jitter: number, opts: { control?: number; fadeStep?: number; minim
 // Shape Dynamics only — uses the discovered $szVr key.
 export async function applyShapeDynamicsOnly(): Promise<void> {
   await executeAsModal("BrushBuddy: shape dynamics only", async () => {
-    await bp([{
-      _obj: "select",
-      _target: [{ _ref: "paintbrushTool" }],
-      _options: { dialogOptions: "dontDisplay" },
-    }]);
+    await ensureBrushTool();
     await bp([{
       _obj: "set",
       _target: [
@@ -269,11 +246,7 @@ export async function applyShapeDynamicsOnly(): Promise<void> {
 
 export async function applyStippleDynamics(): Promise<void> {
   await executeAsModal("BrushBuddy: apply dynamics", async () => {
-    await bp([{
-      _obj: "select",
-      _target: [{ _ref: "paintbrushTool" }],
-      _options: { dialogOptions: "dontDisplay" },
-    }]);
+    await ensureBrushTool();
     // Real schema: every panel is FLAT on currentToolOptions, gated by use*
     // booleans. Dynamic params use Adobe's internal $-codes wrapped in $brVr.
     await bp([{
@@ -311,11 +284,7 @@ export async function applyStippleDynamics(): Promise<void> {
 // ---------------------------------------------------------------------------
 export async function applyDualBrush(): Promise<void> {
   await executeAsModal("BrushBuddy: apply dual brush", async () => {
-    await bp([{
-      _obj: "select",
-      _target: [{ _ref: "paintbrushTool" }],
-      _options: { dialogOptions: "dontDisplay" },
-    }]);
+    await ensureBrushTool();
     // Dual Brush is its own _obj: "dualBrush" sub-object with the same flat
     // shape as currentToolOptions. The secondary `brush` is left untouched —
     // PS keeps the prior choice. To set a specific secondary tip we'd need to
@@ -355,11 +324,7 @@ export async function renderProofStroke(): Promise<void> {
     const h = doc.height;
 
     // Brush tool must be active for `stroke` to be available.
-    await bp([{
-      _obj: "select",
-      _target: [{ _ref: "paintbrushTool" }],
-      _options: { dialogOptions: "dontDisplay" },
-    }]);
+    await ensureBrushTool();
 
     const proofLayer = doc.layers.find((l: any) => l.name === PROOF_LAYER_NAME);
     if (!proofLayer) {
