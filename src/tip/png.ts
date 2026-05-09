@@ -121,7 +121,7 @@ export function encodePng(buf: PixelBuffer): Uint8Array {
  */
 export function pixelBufferToObjectUrl(buf: PixelBuffer): string {
   const png = encodePng(buf);
-  const blob = new Blob([png], { type: "image/png" });
+  const blob = new Blob([png as BlobPart], { type: "image/png" });
   return URL.createObjectURL(blob);
 }
 
