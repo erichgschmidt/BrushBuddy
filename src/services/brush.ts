@@ -353,16 +353,25 @@ export async function applyMinimalSpacingOnly(): Promise<void> {
 
 /**
  * The working SET path discovered in the M0 spike: target the brush ref
- * directly with a sampledBrush descriptor. PS accepts partial sampledBrush
- * descriptors here (you don't need to send every field).
+ * directly with a sampledBrush descriptor. CRITICAL: PS treats this as a
+ * full brush replacement, so we must include the existing sampledData (tip
+ * pixels UUID) and other tip metadata or PS substitutes a default soft round.
  *
- * This is the load-bearing primitive for all brush mutations.
+ * NOTE: This path only honors brush-tip fields (spacing, diameter, angle,
+ * roundness, hardness, flipX, flipY, name). Dynamics fields like $szVr,
+ * useTipDynamics, useScatter etc. are silently dropped — they live on
+ * currentToolOptions which PS won't let us write to.
  */
 async function setBrushProps(props: any): Promise<void> {
+  // Read the current brush sub-descriptor and preserve sampledData + the rest
+  // of the tip metadata so we don't accidentally reset to a soft round.
+  const tool = await getToolOptions();
+  const existing = tool?.brush ?? {};
+  const merged = { _obj: "sampledBrush", ...existing, ...props };
   await bp([{
     _obj: "set",
     _target: [{ _ref: "brush", _enum: "ordinal", _value: "targetEnum" }],
-    to: { _obj: "sampledBrush", ...props },
+    to: merged,
     _options: { dialogOptions: "dontDisplay" },
   }]);
 }
@@ -424,26 +433,15 @@ export async function applyShapeDynamicsOnly(): Promise<void> {
   });
 }
 
+// Stipple recipe — but limited to tip-level fields PS accepts on this path.
+// Dynamics (useTipDynamics, $szVr, useScatter, etc.) are NOT settable via
+// batchPlay in PS 2025 — see TECH-FEASIBILITY for the spike conclusion.
+// We just bump spacing here as the visible "stipple" effect on the tip.
 export async function applyStippleDynamics(): Promise<void> {
   await executeAsModal("BrushBuddy: apply dynamics", async () => {
     await ensureBrushTool();
     await setBrushProps({
-      // Shape Dynamics — size jitter w/ minimum diameter floor.
-      useTipDynamics: true,
-      $szVr: brVr(25),
-      minimumDiameter: { _unit: "percentUnit", _value: 30 },
-      angleDynamics: brVr(0),
-      roundnessDynamics: brVr(0),
-      // Scattering — visible stamps, both axes, count jitter.
-      useScatter: true,
       spacing: { _unit: "percentUnit", _value: 180 },
-      bothAxes: true,
-      count: 1,
-      scatterDynamics: brVr(60),
-      countDynamics: brVr(40),
-      // Transfer (Paint Dynamics) — opacity jitter w/ minimum.
-      usePaintDynamics: true,
-      $opVr: brVr(30, { minimum: 30 }),
     });
   });
 }
