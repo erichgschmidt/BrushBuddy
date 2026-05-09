@@ -11,7 +11,55 @@ import {
 import { commitTipAsBrush } from "../tip/commit";
 import { probeStamp } from "../tip/stampProbe";
 import { pixelBufferToObjectUrl } from "../tip/png";
+import {
+  generatePerlin, generateWorley, generateVoronoi, generateCanvasWeave,
+} from "../tip/generators";
 import type { PixelBuffer } from "../tip/types";
+
+type GeneratorKind = "perlin" | "worley" | "voronoi" | "canvas";
+
+interface GenParams {
+  kind: GeneratorKind;
+  size: number;
+  scale: number;     // perlin/canvas: feature size; worley/voronoi: cell size
+  detail: number;    // perlin: octaves; worley: jitter*100; voronoi: jitter*100; canvas: jitter*100
+  variant: number;   // perlin: persistence*100; worley: 0=F1 1=F2 2=F2-F1; voronoi: 0=value 1=edges; canvas: contrast*100
+  seed: number;
+}
+
+function runGenerator(p: GenParams): PixelBuffer {
+  const size = Math.max(16, Math.min(2500, p.size | 0));
+  switch (p.kind) {
+    case "perlin":
+      return generatePerlin({
+        width: size, height: size,
+        scale: p.scale, octaves: Math.max(1, Math.min(8, Math.round(p.detail))),
+        persistence: p.variant / 100, lacunarity: 2, seed: p.seed,
+      });
+    case "worley": {
+      const modes = ["F1", "F2", "F2-F1"] as const;
+      return generateWorley({
+        width: size, height: size,
+        cellSize: p.scale, jitter: p.detail / 100,
+        mode: modes[Math.max(0, Math.min(2, Math.round(p.variant)))],
+        seed: p.seed,
+      });
+    }
+    case "voronoi":
+      return generateVoronoi({
+        width: size, height: size,
+        cellSize: p.scale, jitter: p.detail / 100,
+        mode: p.variant >= 50 ? "edges" : "value",
+        seed: p.seed,
+      });
+    case "canvas":
+      return generateCanvasWeave({
+        width: size, height: size,
+        pitch: p.scale, jitter: p.detail / 100,
+        contrast: p.variant / 100, seed: p.seed,
+      });
+  }
+}
 
 const OP_KINDS: OpKind[] = [
   "alphaFromLuminance", "autoLevels", "levels", "threshold",
@@ -29,6 +77,10 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
   const [addPick, setAddPick] = useState<OpKind>("alphaFromLuminance");
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const lastUrlRef = useRef<string | null>(null);
+  const [gen, setGen] = useState<GenParams>({
+    kind: "perlin", size: 256, scale: 32, detail: 4, variant: 50, seed: 1,
+  });
+  const [showGen, setShowGen] = useState(false);
 
   // Compute the final preview buffer (memoized inside opstack).
   const preview = useMemo<PixelBuffer | null>(() => {
@@ -88,7 +140,79 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
         <button onClick={() => onIngest("selection")} disabled={busy} style={smBtn}>from selection</button>
         <button onClick={() => onIngest("layer")}     disabled={busy} style={smBtn}>from layer</button>
         <button onClick={() => onIngest("file")}      disabled={busy} style={smBtn}>from file…</button>
+        <button onClick={() => setShowGen((v) => !v)} disabled={busy} style={smBtn}>
+          {showGen ? "▼ generate" : "▶ generate"}
+        </button>
       </div>
+
+      {showGen && (
+        <div style={{ background: "#1c1c1c", border: "1px solid #3a3a3a", borderRadius: 4, padding: 6, display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ display: "flex", gap: 4 }}>
+            {(["perlin", "worley", "voronoi", "canvas"] as GeneratorKind[]).map((k) => (
+              <button
+                key={k}
+                onClick={() => setGen((g) => ({ ...g, kind: k }))}
+                style={{
+                  ...smBtn,
+                  background: gen.kind === k ? "#1473e6" : "#3a3a3a",
+                  border: gen.kind === k ? "1px solid #1473e6" : "1px solid #555",
+                }}
+              >{k}</button>
+            ))}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 4, alignItems: "center", fontSize: 11 }}>
+            <span style={{ color: "#888" }}>size</span>
+            <input type="range" min={32} max={1024} step={16} value={gen.size}
+                   onChange={(e) => setGen((g) => ({ ...g, size: Number(e.target.value) }))} />
+            <span style={{ color: "#bbb", width: 36, textAlign: "right" }}>{gen.size}</span>
+
+            <span style={{ color: "#888" }}>{gen.kind === "canvas" ? "pitch" : gen.kind === "perlin" ? "scale" : "cell"}</span>
+            <input type="range" min={2} max={256} step={1} value={gen.scale}
+                   onChange={(e) => setGen((g) => ({ ...g, scale: Number(e.target.value) }))} />
+            <span style={{ color: "#bbb", width: 36, textAlign: "right" }}>{gen.scale}</span>
+
+            <span style={{ color: "#888" }}>{gen.kind === "perlin" ? "octaves" : "jitter"}</span>
+            <input type="range" min={gen.kind === "perlin" ? 1 : 0} max={gen.kind === "perlin" ? 8 : 100} step={1} value={gen.detail}
+                   onChange={(e) => setGen((g) => ({ ...g, detail: Number(e.target.value) }))} />
+            <span style={{ color: "#bbb", width: 36, textAlign: "right" }}>{gen.detail}</span>
+
+            <span style={{ color: "#888" }}>{
+              gen.kind === "perlin" ? "persist" :
+              gen.kind === "worley" ? "mode" :
+              gen.kind === "voronoi" ? "mode" :
+              "contrast"
+            }</span>
+            <input type="range"
+                   min={0}
+                   max={gen.kind === "worley" ? 2 : 100}
+                   step={1}
+                   value={gen.variant}
+                   onChange={(e) => setGen((g) => ({ ...g, variant: Number(e.target.value) }))} />
+            <span style={{ color: "#bbb", width: 60, textAlign: "right" }}>{
+              gen.kind === "worley" ? (["F1", "F2", "F2-F1"][Math.round(gen.variant)] ?? "F1") :
+              gen.kind === "voronoi" ? (gen.variant >= 50 ? "edges" : "value") :
+              gen.variant
+            }</span>
+
+            <span style={{ color: "#888" }}>seed</span>
+            <input type="number" value={gen.seed}
+                   onChange={(e) => setGen((g) => ({ ...g, seed: Number(e.target.value) || 0 }))}
+                   style={{ background: "#1c1c1c", color: "#e6e6e6", border: "1px solid #555", borderRadius: 3, padding: "2px 4px", fontSize: 11 }} />
+            <button onClick={() => setGen((g) => ({ ...g, seed: Math.floor(Math.random() * 1e6) }))}
+                    style={{ ...smBtn, padding: "2px 6px", fontSize: 10 }}>🎲</button>
+          </div>
+          <button
+            onClick={() => {
+              try {
+                const buf = runGenerator(gen);
+                setState((s) => setSource(s, buf));
+                setStatus({ text: `generated ${gen.kind} ${gen.size}×${gen.size}`, kind: "ok" });
+              } catch (e: any) { setStatus({ text: e?.message ?? String(e), kind: "err" }); }
+            }}
+            style={{ ...smBtn, background: "#1473e6", color: "white", border: "1px solid #1473e6" }}
+          >Generate as source</button>
+        </div>
+      )}
       <button
         onClick={async () => {
           setBusy(true); setStatus({ text: "probing stamp events…", kind: "info" });
