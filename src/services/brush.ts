@@ -43,13 +43,18 @@ export async function defineBrushFromSelection(name: string = LIVE_PREVIEW_NAME)
     if (!doc.selection || !doc.selection.bounds) {
       throw new Error("Make a rectangular selection first.");
     }
-    // Snapshot brush list before, define, snapshot after, diff to find the new one.
-    // PS 2025 honors the `name` parameter — verified by user's earlier log.
-    // No need to snapshot the brush list (which used a probe that pops a
-    // dialog on some shapes).
     await bp([{ _obj: "defineBrush", name, _options: { dialogOptions: "dontDisplay" } }]);
-    LAST_DEFINED_BRUSH_NAME = name;
-    return name;
+    // PS sometimes ignores our `name` and assigns "Sampled Brush N". The new
+    // brush IS auto-activated as the current brush, so we read it back from
+    // currentToolOptions and store the actual name.
+    try {
+      const current = await getToolOptions();
+      const actualName = current?.brush?.name;
+      LAST_DEFINED_BRUSH_NAME = (typeof actualName === "string" && actualName) ? actualName : name;
+    } catch {
+      LAST_DEFINED_BRUSH_NAME = name;
+    }
+    return LAST_DEFINED_BRUSH_NAME!;
   });
 }
 
@@ -172,16 +177,22 @@ export async function selectBrushTool(): Promise<void> {
 
 export async function selectLivePreviewBrush(): Promise<string> {
   return await executeAsModal("BrushBuddy: select live preview", async () => {
-    // Brush tool must be active first.
     await ensureBrushTool();
-    const target = LAST_DEFINED_BRUSH_NAME ?? LIVE_PREVIEW_NAME;
-    // Recorded form from PS 2025: select brush by ref+name.
-    await bp([{
-      _obj: "select",
-      _target: [{ _ref: "brush", _name: target }],
-      _options: { dialogOptions: "dontDisplay" },
-    }]);
-    return target;
+    // defineBrush already auto-activates the new preset, so this is a
+    // belt-and-suspenders re-select. We use the discovered actual name.
+    const target = LAST_DEFINED_BRUSH_NAME;
+    if (!target) return "(no defineBrush yet — capture first; the new brush is auto-active)";
+    try {
+      await bp([{
+        _obj: "select",
+        _target: [{ _ref: "brush", _name: target }],
+        _options: { dialogOptions: "dontDisplay" },
+      }]);
+      return `selected: ${target}`;
+    } catch (e: any) {
+      // Non-fatal — defineBrush already activated it.
+      return `select skipped (${e?.message ?? e}); already active`;
+    }
   });
 }
 
