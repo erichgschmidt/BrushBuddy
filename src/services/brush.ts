@@ -145,6 +145,102 @@ export async function debugDumpCurrentToolOptions(): Promise<any> {
   });
 }
 
+/**
+ * Try multiple set-spacing target shapes; report which (if any) PS accepts.
+ * The point is to find a SET path that works at all — currentToolOptions
+ * appears to be read-only via batchPlay.
+ */
+export async function debugSetProbe(): Promise<any[]> {
+  return await executeAsModal("BrushBuddy: set probe", async () => {
+    await ensureBrushTool();
+    const current = await getToolOptions();
+    const brushName = current?.brush?.name ?? LAST_DEFINED_BRUSH_NAME ?? "Sampled Brush 1";
+    const fullBrush = current?.brush ?? null; // sampledBrush sub-descriptor
+
+    const attempts: { label: string; cmd: any[] }[] = [
+      // A. Property-chain: set "spacing" property of currentToolOptions of application.
+      {
+        label: "A: property spacing of currentToolOptions",
+        cmd: [{
+          _obj: "set",
+          _target: [
+            { _ref: "property", _property: "spacing" },
+            { _ref: "property", _property: "currentToolOptions" },
+            { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
+          ],
+          to: { _unit: "percentUnit", _value: 180 },
+          _options: { dialogOptions: "dontDisplay" },
+        }],
+      },
+      // B. Set sampledBrush by name with full brush descriptor + new spacing.
+      {
+        label: "B: set sampledBrush by name (full descriptor)",
+        cmd: fullBrush ? [{
+          _obj: "set",
+          _target: [{ _ref: "brush", _name: brushName }],
+          to: { ...fullBrush, spacing: { _unit: "percentUnit", _value: 180 } },
+          _options: { dialogOptions: "dontDisplay" },
+        }] : [],
+      },
+      // C. Set "spacing" property of brush by name.
+      {
+        label: "C: property spacing of brush by name",
+        cmd: [{
+          _obj: "set",
+          _target: [
+            { _ref: "property", _property: "spacing" },
+            { _ref: "brush", _name: brushName },
+          ],
+          to: { _unit: "percentUnit", _value: 180 },
+          _options: { dialogOptions: "dontDisplay" },
+        }],
+      },
+      // D. Set "spacing" property of brush targetEnum (the active brush).
+      {
+        label: "D: property spacing of brush targetEnum",
+        cmd: [{
+          _obj: "set",
+          _target: [
+            { _ref: "property", _property: "spacing" },
+            { _ref: "brush", _enum: "ordinal", _value: "targetEnum" },
+          ],
+          to: { _unit: "percentUnit", _value: 180 },
+          _options: { dialogOptions: "dontDisplay" },
+        }],
+      },
+      // E. Set the whole "brush" property of currentToolOptions to new sampledBrush.
+      {
+        label: "E: property brush of currentToolOptions (new sampledBrush)",
+        cmd: fullBrush ? [{
+          _obj: "set",
+          _target: [
+            { _ref: "property", _property: "brush" },
+            { _ref: "property", _property: "currentToolOptions" },
+            { _ref: "application", _enum: "ordinal", _value: "targetEnum" },
+          ],
+          to: { ...fullBrush, spacing: { _unit: "percentUnit", _value: 180 } },
+          _options: { dialogOptions: "dontDisplay" },
+        }] : [],
+      },
+    ];
+
+    const results: { label: string; ok: boolean; error?: string }[] = [];
+    for (const { label, cmd } of attempts) {
+      if (!cmd.length) { results.push({ label, ok: false, error: "skipped (no precondition)" }); continue; }
+      try {
+        await bp(cmd);
+        results.push({ label, ok: true });
+      } catch (e: any) {
+        results.push({ label, ok: false, error: e?.message ?? String(e) });
+      }
+    }
+    (globalThis as any).__brushBuddyDumps = results;
+    // eslint-disable-next-line no-console
+    console.log("[BrushBuddy] set-spacing probes:", JSON.stringify(results, null, 2));
+    return results.map((r) => r.ok ? `✓ ${r.label}` : `✗ ${r.label}: ${r.error}`);
+  });
+}
+
 /** Returns the most recent dump's full JSON, suitable for paste. */
 export function getLastDumpJson(): string {
   const dumps = (globalThis as any).__brushBuddyDumps;
