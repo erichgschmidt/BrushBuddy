@@ -92,32 +92,23 @@ async function runCommit(buf: PixelBuffer, desiredName?: string): Promise<RunRes
   }
 }
 
-// Make a new RGB document at the buffer's dimensions, white background. The
-// "make document" descriptor returns the new doc's id in `documentID`.
+// Make a new RGB document at the buffer's dimensions. Use the UXP DOM
+// app.documents.add — far more reliable than batchPlay `make document` whose
+// descriptor varies between PS versions and was rejected with -128 in PS 26.
 async function createScratchDoc(width: number, height: number): Promise<number> {
-  const res = await bp([{
-    _obj: "make",
-    _target: [{ _ref: "document" }],
-    new: {
-      _obj: "document",
-      mode: { _class: "RGBColorMode" },
-      width: { _unit: "pixelsUnit", _value: width },
-      height: { _unit: "pixelsUnit", _value: height },
-      resolution: { _unit: "densityUnit", _value: 72 },
-      depth: 8,
-      fill: { _enum: "fill", _value: "white" },
-      profile: "sRGB IEC61966-2.1",
-    },
-    _options: { dialogOptions: "dontDisplay" },
-  }]);
-  const id =
-    (res?.[0] as any)?.documentID ??
-    (res?.[0] as any)?.ID ??
-    null;
-  if (typeof id !== "number") {
-    throw new Error("Failed to create scratch document (no documentID returned).");
+  const { app } = await import("photoshop");
+  const doc: any = await (app as any).documents.add({
+    width,
+    height,
+    resolution: 72,
+    mode: "RGBColorMode",
+    fill: "transparent",
+    name: "BrushBuddy Scratch",
+  });
+  if (!doc || typeof doc.id !== "number") {
+    throw new Error("Failed to create scratch document via app.documents.add");
   }
-  return id;
+  return doc.id;
 }
 
 async function writePixelsToActiveLayer(docId: number, buf: PixelBuffer): Promise<void> {
