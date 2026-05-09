@@ -9,6 +9,7 @@ import {
   runStackMemoized, setSource, toggleOp, updateOpParams, moveOp,
 } from "../tip/opstack";
 import { commitTipAsBrush } from "../tip/commit";
+import { pixelBufferToObjectUrl } from "../tip/png";
 import type { PixelBuffer } from "../tip/types";
 
 const OP_KINDS: OpKind[] = [
@@ -25,7 +26,8 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<Status | null>(null);
   const [addPick, setAddPick] = useState<OpKind>("alphaFromLuminance");
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const lastUrlRef = useRef<string | null>(null);
 
   // Compute the final preview buffer (memoized inside opstack).
   const preview = useMemo<PixelBuffer | null>(() => {
@@ -34,16 +36,18 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
     catch (e: any) { setStatus({ text: e?.message ?? String(e), kind: "err" }); return null; }
   }, [state]);
 
-  // Render the preview to canvas whenever it changes.
+  // Encode preview to a PNG Blob URL whenever it changes.
+  // (UXP's canvas 2D context lacks ImageData/createImageData, so we use <img>.)
   useEffect(() => {
-    const cvs = canvasRef.current; if (!cvs) return;
-    if (!preview) { cvs.width = 1; cvs.height = 1; return; }
-    cvs.width = preview.width; cvs.height = preview.height;
-    const ctx = cvs.getContext("2d"); if (!ctx) return;
-    // UXP doesn't expose `ImageData` as a global — use ctx.createImageData and copy.
-    const img = ctx.createImageData(preview.width, preview.height);
-    img.data.set(preview.data);
-    ctx.putImageData(img, 0, 0);
+    if (lastUrlRef.current) { try { URL.revokeObjectURL(lastUrlRef.current); } catch { /* ignore */ } }
+    if (!preview) { setPreviewUrl(null); lastUrlRef.current = null; return; }
+    try {
+      const url = pixelBufferToObjectUrl(preview);
+      lastUrlRef.current = url;
+      setPreviewUrl(url);
+    } catch (e: any) {
+      setStatus({ text: `preview encode failed: ${e?.message ?? e}`, kind: "err" });
+    }
   }, [preview]);
 
   async function onIngest() {
@@ -82,17 +86,13 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
       </div>
 
       <div style={{
-        background: "#1c1c1c", borderRadius: 4, padding: 8,
+        background: "repeating-conic-gradient(#222 0 25%, #333 0 50%) 0 0/16px 16px",
+        borderRadius: 4, padding: 8,
         display: "flex", justifyContent: "center", alignItems: "center", minHeight: 120,
       }}>
-        <canvas
-          ref={canvasRef}
-          style={{
-            maxWidth: "100%", maxHeight: 220,
-            imageRendering: "pixelated",
-            background: "repeating-conic-gradient(#222 0 25%, #333 0 50%) 0 0/16px 16px",
-          }}
-        />
+        {previewUrl
+          ? <img src={previewUrl} style={{ maxWidth: "100%", maxHeight: 220, imageRendering: "pixelated" }} />
+          : <div style={{ color: "#555", fontSize: 11 }}>no preview</div>}
       </div>
       {preview && (
         <div style={{ color: "#888", fontSize: 11, textAlign: "center" }}>
