@@ -90,21 +90,29 @@ async function runCommit(buf: PixelBuffer, desiredName?: string): Promise<Commit
 
 // Make a new pixel layer at the top of the active doc; return its id.
 async function makeTipLayer(): Promise<number> {
-  const doc = getActiveDoc();
-  // Capture the set of layer ids before the make so we can diff and find the
-  // new one — `make layer` returns a result but the shape varies, easier to diff.
-  const before = new Set<number>((doc.layers ?? []).map((l: any) => l.id));
-  await bp([{
+  // The `make layer` event returns the new layer's id directly in the result.
+  // Shapes vary by PS version — `layerID`, `ID`, or nested under `_obj:"layer"`.
+  // Fallback: read app.activeDocument.activeLayers (PS auto-selects new layer).
+  const res = await bp([{
     _obj: "make",
     _target: [{ _ref: "layer" }],
     using: { _obj: "layer", name: TIP_LAYER_NAME },
     _options: { dialogOptions: "dontDisplay" },
   }]);
-  // Re-read the doc to discover the new layer id. UXP's DOM updates synchronously.
-  const fresh = (app.activeDocument?.layers ?? []) as any[];
-  const made = fresh.find((l) => !before.has(l.id));
-  if (!made) throw new Error("makeTipLayer: created layer not found");
-  return made.id;
+  const r0 = (res?.[0] ?? {}) as any;
+  const idFromResult: number | undefined =
+    (typeof r0.layerID === "number" && r0.layerID) ||
+    (typeof r0.ID === "number"      && r0.ID)      ||
+    (typeof r0?.layer?._id === "number" && r0.layer._id) ||
+    undefined;
+  if (idFromResult) return idFromResult;
+
+  // Fallback: PS auto-selects the new layer; pick the active one.
+  const doc = app.activeDocument;
+  const active = (doc?.activeLayers ?? [])[0]
+              ?? (doc?.layers ?? []).find((l: any) => l.name === TIP_LAYER_NAME);
+  if (!active) throw new Error("makeTipLayer: could not resolve new layer id");
+  return active.id;
 }
 
 async function writePixelsToLayer(docId: number, layerId: number, buf: PixelBuffer): Promise<void> {
