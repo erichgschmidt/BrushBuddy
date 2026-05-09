@@ -13,6 +13,10 @@ import { mulberry32 } from "../generators/rng";
 import type { VectorShape } from "../vector/types";
 import { buildPathSampler } from "../vector/sample";
 
+export { preserveRange } from "./preserveRange";
+
+export type BlendMode = "max" | "min" | "over" | "sum" | "average";
+
 import type { MarkPlacement } from "../analyze/types";
 
 export type LayoutKind = "scatter" | "grid" | "line" | "vectorPath" | "fingerprint";
@@ -36,7 +40,7 @@ export interface ComposerParams {
   count: number;
   variation: VariationParams;
   seed: number;
-  blend?: "max" | "min" | "over" | "sum";
+  blend?: BlendMode;
 
   // Layout-specific:
   // scatter / grid have no extras
@@ -169,7 +173,9 @@ function stampOne(
   dst: Uint8ClampedArray, dW: number, dH: number,
   src: Uint8ClampedArray, sW: number, sH: number,
   s: PlacedStamp,
-  blend: "max" | "min" | "over" | "sum",
+  blend: BlendMode,
+  // For "average" mode: count buffer (one entry per dst pixel).
+  counts?: Uint16Array,
 ): void {
   const cosA = Math.cos(-s.angleRad);
   const sinA = Math.sin(-s.angleRad);
@@ -217,26 +223,40 @@ function stampOne(
         const dstV = dst[o];
         if (blend === "max") dst[o] = Math.max(dstV, nv);
         else if (blend === "min") {
-          // For min on alpha we want max alpha (so layered opacity grows);
-          // but RGB min, alpha union.
           if (c === 3) dst[o] = Math.max(dstV, nv);
           else dst[o] = Math.min(dstV || 255, nv);
         } else if (blend === "sum") {
           dst[o] = Math.min(255, dstV + nv);
+        } else if (blend === "average") {
+          // Running mean: dst[o] = (dst[o] * count + nv) / (count + 1).
+          // Counts incremented once per dst pixel (in the alpha-channel pass).
+          const pixIdx = y * dW + x;
+          const n = counts ? counts[pixIdx] : 0;
+          dst[o] = (dstV * n + nv) / (n + 1);
         } else /* over */ {
           if (c === 3) {
             const a = nv / 255;
             dst[o] = dstV + (255 - dstV) * a;
           } else {
-            // simple overwrite weighted by source alpha bilinear (cheap)
-            const aIdx = (y * dW + x) * 4 + 3;
             const a = (src[i00 + 3] * (1 - tx) + src[i10 + 3] * tx) * (1 - ty)
                     + (src[i01 + 3] * (1 - tx) + src[i11 + 3] * tx) * ty;
             const wt = (a / 255) * s.opacity;
             dst[o] = dstV * (1 - wt) + nv * wt;
-            void aIdx;
           }
         }
+      }
+    }
+  }
+  // Increment per-pixel count for "average" mode (after the channel loop).
+  if (blend === "average" && counts) {
+    for (let y = yMin; y <= yMax; y++) {
+      for (let x = xMin; x <= xMax; x++) {
+        const dx = x - s.cx;
+        const dy = y - s.cy;
+        const rx = (dx * cosA - dy * sinA) * invScale * fx + sW / 2;
+        const ry = (dx * sinA + dy * cosA) * invScale * fy + sH / 2;
+        if (rx < 0 || ry < 0 || rx >= sW - 1 || ry >= sH - 1) continue;
+        counts[y * dW + x]++;
       }
     }
   }
@@ -246,12 +266,13 @@ export function compose(source: PixelBuffer, params: ComposerParams): PixelBuffe
   const W = Math.max(1, params.width | 0);
   const H = Math.max(1, params.height | 0);
   const dst = new Uint8ClampedArray(W * H * 4);
-  const blend = params.blend ?? "max";
+  const blend = params.blend ?? "over";
+  const counts = blend === "average" ? new Uint16Array(W * H) : undefined;
 
   const rand = mulberry32(params.seed | 0);
   const placements = generatePlacements({ ...params, width: W, height: H }, rand);
   for (const p of placements) {
-    stampOne(dst, W, H, source.data, source.width, source.height, p, blend);
+    stampOne(dst, W, H, source.data, source.width, source.height, p, blend, counts);
   }
   return { width: W, height: H, data: dst };
 }

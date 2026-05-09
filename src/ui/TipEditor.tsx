@@ -14,7 +14,7 @@ import {
   generatePerlin, generateWorley, generateVoronoi, generateCanvasWeave,
 } from "../tip/generators";
 import { VECTOR_PRESETS, PRESET_NAMES, rasterizeShape, type VectorShape } from "../tip/vector";
-import { compose, diverge, settle, DEFAULT_VARIATION, type LayoutKind } from "../tip/composer";
+import { compose, diverge, settle, DEFAULT_VARIATION, preserveRange, type LayoutKind, type BlendMode } from "../tip/composer";
 import {
   extractMarks, computeFingerprint, summarizeFingerprint,
   regeneratePlacements, DEFAULT_MULTIPLIERS,
@@ -75,7 +75,9 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
     layout: LayoutKind; count: number; posJit: number;
     scaleMin: number; scaleMax: number; rotJit: number; follow: boolean;
     pathPreset: string; seed: number;
-  }>({ layout: "scatter", count: 16, posJit: 0, scaleMin: 0.6, scaleMax: 1.0, rotJit: 90, follow: false, pathPreset: "circle", seed: 1 });
+    blend: BlendMode;
+    preserveRange: boolean;
+  }>({ layout: "scatter", count: 16, posJit: 0, scaleMin: 0.6, scaleMax: 1.0, rotJit: 90, follow: false, pathPreset: "circle", seed: 1, blend: "over", preserveRange: false });
   const [history, setHistory] = useState<PixelBuffer[]>([]);
 
   // Analyze state
@@ -157,17 +159,18 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
     if (!state.source) { setStatus({ text: "no source — pick one first", kind: "err" }); return; }
     const size = getCanvasSize();
     try {
-      const out = compose(state.source, {
+      let out = compose(state.source, {
         width: size, height: size,
         layout: comp.layout, count: comp.count, seed: comp.seed,
         variation: { ...DEFAULT_VARIATION, positionJitterPx: comp.posJit, scaleMin: comp.scaleMin, scaleMax: comp.scaleMax, rotationJitterDeg: comp.rotJit, rotationFollowTangent: comp.follow },
         vectorShape: comp.layout === "vectorPath" ? VECTOR_PRESETS[comp.pathPreset] : null,
         lineFrom: { x: 0.1, y: 0.5 }, lineTo: { x: 0.9, y: 0.5 },
-        blend: "max",
+        blend: comp.blend,
       });
+      if (comp.preserveRange) out = preserveRange(state.source, out);
       pushHistory(state.source);
       setState((s) => setSource(s, out));
-      setStatus({ text: `stamped ×${comp.count} via ${comp.layout}`, kind: "ok" });
+      setStatus({ text: `stamped ×${comp.count} via ${comp.layout} (${comp.blend}${comp.preserveRange ? ", range-preserved" : ""})`, kind: "ok" });
     } catch (e: any) { setStatus({ text: e?.message ?? String(e), kind: "err" }); }
   }
 
@@ -314,6 +317,25 @@ export function TipEditor(props: { onCommitted?: (brushName: string) => void }) 
           <label style={{ display: "flex", gap: 6, alignItems: "center", color: "#bbb", fontSize: 11 }}>
             <input type="checkbox" checked={comp.follow} onChange={(e) => setComp((c) => ({ ...c, follow: e.target.checked }))} />
             rotate to follow path tangent
+          </label>
+          <div style={{ display: "grid", gridTemplateColumns: "65px 1fr", gap: 4, alignItems: "center", fontSize: 11 }}>
+            <span style={{ color: "#888" }}>blend</span>
+            <select
+              value={comp.blend}
+              onChange={(e) => setComp((c) => ({ ...c, blend: e.target.value as BlendMode }))}
+              style={selectStyle}
+            >
+              <option value="over">over (natural alpha blend)</option>
+              <option value="max">max / lighten (accumulates light)</option>
+              <option value="min">min / darken (accumulates dark)</option>
+              <option value="average">average (mean of stamps)</option>
+              <option value="sum">sum (additive, clipped)</option>
+            </select>
+          </div>
+          <label style={{ display: "flex", gap: 6, alignItems: "center", color: "#bbb", fontSize: 11 }}>
+            <input type="checkbox" checked={comp.preserveRange}
+                   onChange={(e) => setComp((c) => ({ ...c, preserveRange: e.target.checked }))} />
+            preserve range (remap output to source's brightness envelope)
           </label>
           <SeedRow value={comp.seed} onChange={(v) => setComp((c) => ({ ...c, seed: v }))} />
           <div style={{ display: "flex", gap: 4 }}>

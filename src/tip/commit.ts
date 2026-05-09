@@ -90,12 +90,25 @@ async function runCommit(buf: PixelBuffer, desiredName?: string): Promise<Commit
     await defineBrush(name);
 
     const actualName = await readActiveBrushName(name);
+
+    // Cleanup BEFORE the explicit select — otherwise the layer deletion
+    // can knock the brush state.
+    if (layerId !== null) await deleteLayer(layerId).catch(() => { /* swallow */ });
+    layerId = null;
+    await deselect().catch(() => { /* swallow */ });
+
+    // Explicitly select the new brush by name so the user sees it active in
+    // the Brushes panel. defineBrush *usually* auto-activates but cleanup
+    // steps sometimes interfere.
+    await selectBrushByName(actualName).catch(() => { /* tolerate; brush still saved */ });
+
     return {
       brushName: actualName + (downsampled ? ` (downsampled to ${writeBuf.width}×${writeBuf.height} to fit doc)` : ""),
       widthPx: writeBuf.width,
       heightPx: writeBuf.height,
     };
   } finally {
+    // Final safety net.
     if (layerId !== null) await deleteLayer(layerId).catch(() => { /* swallow */ });
     await deselect().catch(() => { /* swallow */ });
   }
@@ -210,6 +223,15 @@ async function readActiveBrushName(fallback: string): Promise<string> {
   } catch {
     return fallback;
   }
+}
+
+async function selectBrushByName(name: string): Promise<void> {
+  await ensureBrushTool();
+  await bp([{
+    _obj: "select",
+    _target: [{ _ref: "brush", _name: name }],
+    _options: { dialogOptions: "dontDisplay" },
+  }]);
 }
 
 async function deleteLayer(layerId: number): Promise<void> {
