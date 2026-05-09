@@ -380,9 +380,8 @@ async function getToolOptions(): Promise<any> {
   return r?.[0]?.currentToolOptions;
 }
 
-// Merge a patch into current tool options and SET the whole thing back. PS's
-// `set currentToolOptions` rejects partial descriptors with result=-128, but
-// accepts a fully-formed one. This get→merge→set pattern is the workaround.
+// Kept for reference / future probes — currently unused.
+// @ts-expect-error unused
 async function patchToolOptions(patch: any): Promise<void> {
   const current = await getToolOptions();
   if (!current) throw new Error("could not read current tool options");
