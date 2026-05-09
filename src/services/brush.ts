@@ -7,7 +7,7 @@
 // Naming convention: every volatile artifact is namespaced "BrushBuddy ..." so
 // we can find and prune them on session end.
 
-import { bp, bpSilent, ensureBrushTool, executeAsModal, getActiveDoc } from "./photoshop";
+import { bp, ensureBrushTool, executeAsModal, getActiveDoc } from "./photoshop";
 import { action } from "photoshop";
 
 export const LIVE_PREVIEW_NAME = "BrushBuddy Live Preview";
