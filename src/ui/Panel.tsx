@@ -1,219 +1,119 @@
-import { useState, useCallback } from "react";
-import {
-  captureTipFromSelection,
-  defineBrushFromSelection,
-  prepDesaturate,
-  prepAutoLevels,
-  selectBrushTool,
-  selectLivePreviewBrush,
-  applyStippleDynamics,
-  applyMinimalSpacingOnly,
-  applyShapeDynamicsOnly,
-  applyDualBrush,
-  renderProofStroke,
-  loopTest,
-  cleanupVolatiles,
-  debugListBrushes,
-  debugDumpCurrentToolOptions,
-  debugSetProbe,
-  getLastDumpJson,
-  getLastDefinedBrushName,
-} from "../services/brush";
-
-type LogEntry = { id: number; ts: string; level: "info" | "ok" | "err"; text: string };
+import { useEffect, useRef, useState } from "react";
+import { captureFromSelection, readTipProps, setTipProps, getLastBrushName, TipProps } from "../services/brush";
 
 export function Panel() {
-  const [log, setLog] = useState<LogEntry[]>([]);
   const [busy, setBusy] = useState(false);
-  const [cycles, setCycles] = useState(10);
+  const [brushName, setBrushName] = useState<string | null>(null);
+  const [status, setStatus] = useState<{ text: string; kind: "info" | "ok" | "err" } | null>(null);
+  const [props, setProps] = useState<TipProps>({
+    spacing: 25, diameter: 50, angle: 0, roundness: 100, hardness: 100, flipX: false, flipY: false,
+  });
 
-  const append = useCallback((level: LogEntry["level"], text: string) => {
-    setLog((prev) => [
-      ...prev,
-      { id: prev.length, ts: new Date().toLocaleTimeString(), level, text },
-    ].slice(-200));
-  }, []);
+  // Debounce slider commits to PS — fire 50ms after last change.
+  const debounceRef = useRef<number | null>(null);
+  function commit(next: TipProps) {
+    setProps(next);
+    if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    debounceRef.current = window.setTimeout(async () => {
+      try { await setTipProps(next); } catch (e: any) { setStatus({ text: e?.message ?? String(e), kind: "err" }); }
+    }, 50);
+  }
 
-  const run = useCallback(async (label: string, fn: () => Promise<unknown>) => {
-    setBusy(true);
-    const t0 = performance.now();
-    append("info", `→ ${label}`);
+  async function onCapture() {
+    setBusy(true); setStatus({ text: "capturing…", kind: "info" });
     try {
-      const result = await fn();
-      const dt = (performance.now() - t0).toFixed(0);
-      append("ok", `✓ ${label} (${dt}ms)${result !== undefined ? ` ${JSON.stringify(result)}` : ""}`);
+      const name = await captureFromSelection();
+      const cur = await readTipProps();
+      setBrushName(name);
+      setProps({
+        spacing: cur.spacing ?? 25,
+        diameter: cur.diameter ?? 50,
+        angle: cur.angle ?? 0,
+        roundness: cur.roundness ?? 100,
+        hardness: cur.hardness ?? 100,
+        flipX: cur.flipX ?? false,
+        flipY: cur.flipY ?? false,
+      });
+      setStatus({ text: `captured: ${name}`, kind: "ok" });
     } catch (e: any) {
-      const dt = (performance.now() - t0).toFixed(0);
-      append("err", `✗ ${label} (${dt}ms): ${e?.message ?? String(e)}`);
-    } finally {
-      setBusy(false);
-    }
-  }, [append]);
+      setStatus({ text: e?.message ?? String(e), kind: "err" });
+    } finally { setBusy(false); }
+  }
+
+  // Restore last brush name on mount.
+  useEffect(() => { setBrushName(getLastBrushName()); }, []);
 
   return (
-    <div style={{ padding: 12, fontSize: 12 }}>
-      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>BrushBuddy — M0 Spike</div>
-      <div style={{ color: "#999", marginBottom: 12, lineHeight: 1.4 }}>
-        Validate the dummy-brush loop. Make a rectangular selection on a layer with usable
-        contrast, then run the buttons in order.
-      </div>
-
-      <Section label="1. Capture tip (combined)">
-        <Btn disabled={busy} onClick={() => run("capture (all 3 steps)", () => captureTipFromSelection())}>
-          Capture (desat → autolvls → define)
-        </Btn>
-      </Section>
-
-      <Section label="1b. Capture steps (isolate failures)">
-        <Btn disabled={busy} onClick={() => run("desaturate", () => prepDesaturate())}>desaturate</Btn>
-        <Btn disabled={busy} onClick={() => run("autoLevels", () => prepAutoLevels())}>autoLevels</Btn>
-        <Btn disabled={busy} onClick={() => run("defineBrush only", () => defineBrushFromSelection())}>defineBrush only</Btn>
-      </Section>
-
-      <Section label="1c. Select brush">
-        <Btn disabled={busy} onClick={() => run("select brush tool", () => selectBrushTool())}>brush tool</Btn>
-        <Btn disabled={busy} onClick={() => run("select Live Preview", () => selectLivePreviewBrush())}>Live Preview preset</Btn>
-        <Btn disabled={busy} onClick={() => run("debug: list brushes", () => debugListBrushes())}>debug: list brushes</Btn>
-        <Btn disabled={busy} onClick={() => run("debug: last name", async () => ({ lastDefined: getLastDefinedBrushName() }))}>debug: last name</Btn>
-        <Btn disabled={busy} onClick={() => run("debug: dump tool options", () => debugDumpCurrentToolOptions())}>debug: dump tool options</Btn>
-        <Btn disabled={busy} onClick={() => run("debug: set probe", () => debugSetProbe())}>debug: set probe (A–E)</Btn>
-      </Section>
-
-      <Section label="2. Apply dynamics (bisect)">
-        <Btn disabled={busy} onClick={() => run("spacing only", () => applyMinimalSpacingOnly())}>
-          spacing only (minimal)
-        </Btn>
-        <Btn disabled={busy} onClick={() => run("shape dynamics only", () => applyShapeDynamicsOnly())}>
-          + shape dynamics
-        </Btn>
-        <Btn disabled={busy} onClick={() => run("full stipple", () => applyStippleDynamics())}>
-          full stipple recipe
-        </Btn>
-        <Btn disabled={busy} onClick={() => run("dual brush", () => applyDualBrush())}>
-          dual brush
-        </Btn>
-      </Section>
-
-      <Section label="3. Render proof stroke">
-        <Btn disabled={busy} onClick={() => run("proof stroke", () => renderProofStroke())}>
-          Render proof stroke
-        </Btn>
-      </Section>
-
-      <Section label="4. Loop test">
-        <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
-          <span>cycles:</span>
-          <input
-            type="number"
-            min={1}
-            max={100}
-            value={cycles}
-            onChange={(e) => setCycles(Math.max(1, Math.min(100, Number(e.target.value) || 1)))}
-            style={inputStyle}
-          />
-        </div>
-        <Btn
-          disabled={busy}
-          onClick={() => run(`loop x${cycles}`, async () => {
-            const r = await loopTest(cycles);
-            return { median: `${r.medianMs.toFixed(0)}ms`, p95: `${r.p95Ms.toFixed(0)}ms`, samples: r.samplesMs.map(s => +s.toFixed(0)) };
-          })}
-        >
-          Run loop ×{cycles}
-        </Btn>
-      </Section>
-
-      <Section label="5. Cleanup">
-        <Btn disabled={busy} onClick={() => run("cleanup", () => cleanupVolatiles())}>
-          Remove proof layer
-        </Btn>
-      </Section>
-
-      <div style={{ marginTop: 16, borderTop: "1px solid #444", paddingTop: 8 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, gap: 6 }}>
-          <span style={{ color: "#999" }}>Log</span>
-          <div style={{ display: "flex", gap: 4 }}>
-            <button
-              onClick={async () => {
-                const text = log.map((e) => `[${e.ts}] ${e.level === "err" ? "ERR " : e.level === "ok" ? "OK  " : "    "}${e.text}`).join("\n");
-                try { await navigator.clipboard.writeText(text); append("ok", `📋 copied ${log.length} log lines (${text.length} chars)`); }
-                catch (e: any) { append("err", `clipboard failed: ${e?.message ?? e}`); }
-              }}
-              style={{ ...btnStyle, fontSize: 10, padding: "2px 8px" }}
-            >copy log</button>
-            <button
-              onClick={async () => {
-                const text = getLastDumpJson();
-                try { await navigator.clipboard.writeText(text); append("ok", `📋 copied dump JSON (${text.length} chars)`); }
-                catch (e: any) { append("err", `clipboard failed: ${e?.message ?? e}`); }
-              }}
-              style={{ ...btnStyle, fontSize: 10, padding: "2px 8px" }}
-            >copy dump JSON</button>
-            <button
-              onClick={async () => {
-                try {
-                  const fs = require("uxp").storage.localFileSystem;
-                  const f = await fs.getFileForSaving("brushbuddy-dump.json", { types: ["json"] });
-                  if (!f) { append("info", "save canceled"); return; }
-                  const logText = log.map((e) => `[${e.ts}] ${e.level === "err" ? "ERR " : e.level === "ok" ? "OK  " : "    "}${e.text}`).join("\n");
-                  const dump = getLastDumpJson();
-                  await f.write(`=== BrushBuddy log ===\n${logText}\n\n=== Last dump JSON ===\n${dump}\n`);
-                  append("ok", `💾 saved to ${f.nativePath ?? f.name}`);
-                } catch (e: any) { append("err", `save failed: ${e?.message ?? e}`); }
-              }}
-              style={{ ...btnStyle, fontSize: 10, padding: "2px 8px" }}
-            >save log+dump…</button>
-            <button onClick={() => setLog([])} style={{ ...btnStyle, fontSize: 10, padding: "2px 8px" }}>clear</button>
-          </div>
-        </div>
-        <div style={{ maxHeight: 240, overflow: "auto", fontFamily: "monospace", fontSize: 11, background: "#1c1c1c", borderRadius: 4, padding: 6 }}>
-          {log.length === 0 ? <div style={{ color: "#555" }}>(no events yet)</div> : log.map(e => (
-            <div key={e.id} style={{ color: e.level === "err" ? "#ff8080" : e.level === "ok" ? "#80e080" : "#bbb", whiteSpace: "pre-wrap" }}>
-              [{e.ts}] {e.text}
-            </div>
-          ))}
+    <div style={{ padding: 12, fontSize: 12, display: "flex", flexDirection: "column", gap: 12 }}>
+      <div>
+        <div style={{ fontWeight: 700, fontSize: 14 }}>BrushBuddy</div>
+        <div style={{ color: "#888", fontSize: 11 }}>
+          {brushName ? `active: ${brushName}` : "no brush captured yet"}
         </div>
       </div>
+
+      <button onClick={onCapture} disabled={busy} style={primaryBtn}>
+        Capture from selection
+      </button>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <Slider label="Spacing"   value={props.spacing!}   min={1}   max={1000} unit="%"  onChange={(v) => commit({ ...props, spacing: v })} />
+        <Slider label="Diameter"  value={props.diameter!}  min={1}   max={2500} unit="px" onChange={(v) => commit({ ...props, diameter: v })} />
+        <Slider label="Angle"     value={props.angle!}     min={-180} max={180} unit="°"  onChange={(v) => commit({ ...props, angle: v })} />
+        <Slider label="Roundness" value={props.roundness!} min={0}   max={100}  unit="%"  onChange={(v) => commit({ ...props, roundness: v })} />
+        <Slider label="Hardness"  value={props.hardness!}  min={0}   max={100}  unit="%"  onChange={(v) => commit({ ...props, hardness: v })} />
+        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+          <Toggle label="Flip X" value={props.flipX!} onChange={(v) => commit({ ...props, flipX: v })} />
+          <Toggle label="Flip Y" value={props.flipY!} onChange={(v) => commit({ ...props, flipY: v })} />
+        </div>
+      </div>
+
+      <div style={{ borderTop: "1px solid #3a3a3a", paddingTop: 8, fontSize: 11, color: "#888", lineHeight: 1.4 }}>
+        For dynamics (Shape Dynamics, Scattering, Texture, Transfer, Dual Brush, etc.), use Photoshop's Brush Settings panel (<kbd>F5</kbd>). PS's preview area shows live results.
+      </div>
+
+      {status && (
+        <div style={{ fontSize: 11, color: status.kind === "err" ? "#ff8080" : status.kind === "ok" ? "#80e080" : "#bbb" }}>
+          {status.text}
+        </div>
+      )}
     </div>
   );
 }
 
-function Section(props: { label: string; children: React.ReactNode }) {
+function Slider(props: { label: string; value: number; min: number; max: number; unit: string; onChange: (v: number) => void }) {
   return (
-    <div style={{ marginBottom: 10 }}>
-      <div style={{ color: "#888", fontSize: 11, marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>{props.label}</div>
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{props.children}</div>
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", color: "#bbb", fontSize: 11, marginBottom: 2 }}>
+        <span>{props.label}</span>
+        <span style={{ color: "#888" }}>{Math.round(props.value)}{props.unit}</span>
+      </div>
+      <input
+        type="range"
+        min={props.min} max={props.max} value={props.value}
+        onChange={(e) => props.onChange(Number(e.target.value))}
+        style={{ width: "100%" }}
+      />
     </div>
   );
 }
 
-const btnStyle: React.CSSProperties = {
-  background: "#3a3a3a",
-  color: "#e6e6e6",
-  border: "1px solid #555",
+function Toggle(props: { label: string; value: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label style={{ display: "flex", gap: 6, alignItems: "center", color: "#bbb", fontSize: 11, cursor: "pointer" }}>
+      <input type="checkbox" checked={props.value} onChange={(e) => props.onChange(e.target.checked)} />
+      {props.label}
+    </label>
+  );
+}
+
+const primaryBtn: React.CSSProperties = {
+  background: "#1473e6",
+  color: "white",
+  border: "none",
   borderRadius: 4,
-  padding: "6px 10px",
+  padding: "8px 12px",
   fontSize: 12,
+  fontWeight: 600,
   cursor: "pointer",
 };
-const inputStyle: React.CSSProperties = {
-  background: "#1c1c1c",
-  color: "#e6e6e6",
-  border: "1px solid #555",
-  borderRadius: 4,
-  padding: "2px 6px",
-  fontSize: 12,
-  width: 60,
-};
-
-function Btn(props: { children: React.ReactNode; onClick: () => void; disabled?: boolean }) {
-  return (
-    <button
-      style={{ ...btnStyle, opacity: props.disabled ? 0.5 : 1, cursor: props.disabled ? "not-allowed" : "pointer" }}
-      onClick={props.onClick}
-      disabled={props.disabled}
-    >
-      {props.children}
-    </button>
-  );
-}

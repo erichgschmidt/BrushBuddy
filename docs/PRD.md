@@ -1,4 +1,6 @@
-# BrushBuddy — Product Requirements (v0.2, draft)
+# BrushBuddy — Product Requirements (v0.3, post-M0-spike)
+
+> **Revision note (2026-05-09):** Scope cut after M0 spike confirmed PS's batchPlay won't accept dynamics writes. See [M0-REPORT.md](M0-REPORT.md). Tip-level mutations DO work and are very fast (~15ms), and PS's own Brush Settings preview supplies our Layer-2 visualization for free. v1 leans into tip authoring; dynamics ride along via bundled archetype `.abr` presets.
 
 > Living document. Anchors scope and surfaces disagreement before we build.
 
@@ -61,22 +63,19 @@ Deprioritized for v1: photo retouchers (rarely author), comic artists (heavy cus
   - Auto-crop / auto-center
   - Every op replayable; toggle to compare before/after.
 
-- **Brush Lab — semantic controls** (each maps to a coordinated curve over multiple PS descriptors; see [BRUSH-TAXONOMY.md §3](BRUSH-TAXONOMY.md)):
-  - Chaos · Softness · Wetness · Graininess · Spread · Rhythm · Buildup · Color Life · Tip Variety · Directionality
-  - Each slider exposes a "show underlying" disclosure for power users (Krita-style).
+- **Tip-property cockpit** — live sliders (~15ms updates) for the tip-level properties PS allows us to mutate:
+  - Spacing · Diameter · Angle · Roundness · Hardness · Flip X · Flip Y
+  - Each slider drives `setBrushProps` (the spike's working primitive). PS's Brush Settings panel preview (Layer 2) updates in real time.
 
-- **Dual Brush Lab** (flagship differentiator)
-  - Visual composition system: primary tip + secondary tip + composition mode.
-  - Live preview of the *interaction* (PS's UI never shows this).
-  - Swap primary↔secondary in one click.
-  - Dual-specific semantic sliders: more broken / more speckled / more bristly / more stamped / less repetitive / more natural edge.
+- **Archetype `.abr` library** (replaces in-product dynamics editing)
+  - Bundled hand-authored archetypes: Pencil, Inker, Stipple, Gouache, Dry Brush, Hair/Fur, Foliage, Chalk, Spatter, Grunge, Watercolor Wash, Calligraphy, Marker.
+  - One-click install on first run (or guided manual import).
+  - User picks an archetype to start; tip authoring layers on top — the chosen archetype's dynamics ride along.
+  - For ad-hoc dynamics tweaking, user opens PS's native Brush Settings (F5). UX seam, not a blocker.
 
-- **Hybrid preview pipeline** (architectural; see [ARCHITECTURE.md](ARCHITECTURE.md))
-  - Layer 1: instant Canvas/WebGL simulated stroke in the panel — drives every slider tick.
-  - Layer 2: debounced (~250ms) Photoshop proof — overwrites a `BrushBuddy Live Preview` dummy preset, selects it, renders on a `BrushBuddy Proof` scratch layer.
-  - Layer 3 (bonus): native Brush Settings panel may sync — not a guarantee.
-
-- **Archetype templates**: Pencil, Inker, Gouache, Dry Brush, Watercolor Wash, Hair/Fur, Foliage, Stipple, Chalk, Spatter, Grunge, Calligraphy, Marker. Editable, save-as-recipe in v2.
+- **Two-layer preview pipeline** (architectural; see [ARCHITECTURE.md](ARCHITECTURE.md))
+  - Layer 1: in-panel Canvas/WebGL for the tip editor (masking cockpit operations on the tip itself).
+  - Layer 2: PS's native Brush Settings panel preview — auto-updates as we mutate tip props. **Free, no proof layer needed.**
 
 - **Save & export**
   - Save: duplicate Live Preview into a permanent named preset.
@@ -122,12 +121,12 @@ Deprioritized for v1: photo retouchers (rarely author), comic artists (heavy cus
 
 ## 9. Milestones
 
-- **M0 — Spike (1–2 weeks).** Validate the dummy-brush loop end-to-end. See [TECH-FEASIBILITY.md](TECH-FEASIBILITY.md) for the exact spike spec. Kill-or-greenlight gate.
-- **M1 — Capture + Tip Editor (3–4 weeks).** Tip Capture pipeline + Tip Editor with the masking-cockpit op stack. Layer-1 canvas preview. Save to library.
-- **M2 — Brush Lab + hybrid preview (4–6 weeks).** Semantic sliders, debounced PS proof loop, 5 archetype templates.
-- **M3 — Dual Brush Lab (3–4 weeks).** Composition system, dual-specific semantics, swap primary/secondary.
-- **M4 — Polish + export (2–3 weeks).** Remaining archetypes, `.abr` export, onboarding, telemetry.
-- **M5 — Closed beta (4 weeks).** 20–50 artists. Iterate on semantic mapping (most likely place to need rework).
+- **M0 — Spike. ✅ COMPLETE (2026-05-09).** See [M0-REPORT.md](M0-REPORT.md). Verdict: green with a documented scope cut on dynamics.
+- **M1 — Capture + Tip cockpit (3–4 weeks).** Tip Capture from selection. Live tip-property sliders (spacing/diameter/angle/roundness/hardness/flips) wired to `setBrushProps`. Clean panel UI replacing the spike's debug buttons. Discovered brush name management.
+- **M2 — Tip Editor masking cockpit (4–6 weeks).** Op-stack non-destructive tip editor: warp / threshold / levels / feather / erode / noise / mirror / invert / auto-crop / auto-center. Layer-1 canvas. Save edited tip back to PS via `defineBrush`.
+- **M3 — Archetype library (2–3 weeks).** Hand-author 12 canonical archetype `.abr` files in PS. Bundle with plugin. One-click "Install archetypes" flow. Picker UI to start a session from an archetype.
+- **M4 — Polish + onboarding + telemetry (2 weeks).** First-run tour, error states, basic analytics.
+- **M5 — Closed beta (4 weeks).** 20–50 artists. Iterate on tip editor UX (the most novel surface).
 - **M6 — Launch.** Adobe Marketplace + Gumroad direct.
 
 ## 10. Pricing hypothesis

@@ -1,132 +1,106 @@
-# BrushBuddy — Preview & Sync Architecture
+# BrushBuddy — Preview & Sync Architecture (v0.2, post-spike)
 
-The product promise: **instant simulated preview, frequent real Photoshop verification.**
+**Updated after the M0 spike.** See [M0-REPORT.md](M0-REPORT.md) for findings.
 
-BrushBuddy does not replace Photoshop's brush engine. It is a brush-design cockpit that prepares tips, simulates strokes in real time, and commits native Photoshop brushes when the result feels right.
+The product promise: *the fastest way to author a custom brush in Photoshop, with the tip itself as a first-class artifact.*
 
-## Hybrid preview pipeline
+BrushBuddy does not replace Photoshop's brush engine. It is a tip authoring + live tip-property cockpit that commits to native PS brushes.
 
-Three layers, each with its own latency budget and source of truth.
+## Two-layer preview pipeline (revised)
 
-### Layer 1 — Instant simulated preview (BrushBuddy canvas)
+The original three-layer pipeline collapsed once we discovered PS's own Brush Settings panel already provides a live stroke preview that updates whenever the brush changes. We don't need to render proof strokes ourselves.
 
-- Rendered inside the UXP panel using **HTML Canvas / WebGL**.
-- Drives every slider tick, drag, and toggle. Target frame budget: < 16ms.
-- Approximates — not replicates — Photoshop's brush engine. Good enough for shape, texture, scatter, jitter, basic dual-brush composition, feather, roundness, and a synthesized stroke ramp.
-- Tip-editing tools (feather, threshold, levels, blur, warp, pinch, twist, edge erosion, noise, mirror, invert, crop, center) all run here on the source tip with immediate feedback.
-- This is what the user *feels* while authoring.
+### Layer 1 — In-panel canvas (BrushBuddy's domain)
 
-### Layer 2 — Debounced Photoshop proof
+- Renders the **tip editor** (warp / pinch / twist / threshold / levels / feather / blur / erode / noise / mirror / invert / auto-crop / auto-center) in HTML Canvas / WebGL.
+- The tip is a first-class artifact, edited non-destructively with an op stack.
+- Every op runs in <50 ms; full stack replay <150 ms.
+- This is what the user *manipulates* while authoring.
 
-- After the user pauses (debounce ~250ms; configurable 150–500ms), BrushBuddy updates a temporary preset named **`BrushBuddy Live Preview`** via `batchPlay`, selects it, and renders a proof stroke on a scratch layer.
-- The dummy brush is overwritten in place — same name, same slot — so it doesn't pollute the user's library.
-- Proof strokes render on a dedicated `BrushBuddy Proof` layer so they're disposable.
-- The user always sees the real Photoshop output one beat behind their edits.
+### Layer 2 — Photoshop's native preview (PS's domain — free)
 
-### Layer 3 — Optional Photoshop panel sync (bonus, not foundation)
+- When BrushBuddy mutates a tip-level property via `set brush targetEnum` (the spike's working primitive), Photoshop's own Brush Settings panel preview updates in real time.
+- The Brushes panel thumbnail also reflects the new tip.
+- We don't render or stroke anything ourselves. No proof layer, no work path, no scratch document.
+- This was the spike's biggest architectural simplification.
 
-- Photoshop's native Brush Settings panel *may* reflect the dummy brush as descriptors are written. Treat as nice-to-have.
-- We do not build UX guarantees around it. If it works, power users get a free bridge to PS's full settings panel; if it doesn't, the BrushBuddy panel is the canonical UI.
+## The mutation primitive
 
-## Dummy-brush update loop (the load-bearing risk)
-
-This is the riskiest piece of the architecture and the focus of the M0 spike.
-
+```ts
+async function setBrushProps(props: Partial<SampledBrush>): Promise<void> {
+  // GET first, MERGE, then SET — preserves sampledData (tip pixels UUID)
+  // and other tip metadata, otherwise PS reverts to a default soft round.
+  const tool = await getToolOptions();
+  const merged = { _obj: "sampledBrush", ...tool.brush, ...props };
+  await batchPlay([{
+    _obj: "set",
+    _target: [{ _ref: "brush", _enum: "ordinal", _value: "targetEnum" }],
+    to: merged,
+    _options: { dialogOptions: "dontDisplay" },
+  }], {});
+}
 ```
-slider tick      →  BrushBuddy canvas redraw           (immediate)
-user pauses 250ms→  batchPlay: write tip + dynamics
-                 →  batchPlay: select "BrushBuddy Live Preview"
-                 →  batchPlay: render proof stroke on scratch layer
-user clicks Proof→  same as above, forced
-user clicks Save →  duplicate Live Preview to a named, permanent preset
-```
 
-What we need to validate in M0:
+Honored fields: `spacing`, `diameter`, `angle`, `roundness`, `hardness`, `flipX`, `flipY`, `name`. Unknown fields silently ignored.
 
-1. Overwriting the same preset name doesn't accumulate cruft in PS's preset library.
-2. The full update round-trip (write descriptors → select → draw) completes in **< 600ms** on representative hardware.
-3. PS doesn't pop modal dialogs or confirmation prompts during overwrite.
-4. Undo behavior is sane (user `Ctrl+Z` doesn't unwind their painting work because of our internal traffic).
+## What about dynamics?
 
-If any of these fail, fallbacks:
+Brush dynamics (Shape Dynamics, Scattering, Texture, Transfer, Color Dynamics, Dual Brush, Brush Pose) are **not mutable via batchPlay** in PS 2025. The spike confirmed this against 9 different target shapes.
 
-- **Cruft accumulates** → suffix with a timestamp and prune old previews on session start.
-- **Round-trip too slow** → degrade to "click Proof" only; ship without auto-debounce.
-- **Modals appear** → ship without overwrite, create-new each time, prune.
-- **Undo pollution** → wrap proof actions in a history-state group we can suppress; if not possible, document and warn.
+Our approach:
+
+1. **Bundle archetype `.abr` files** with the plugin. Hand-authored in PS once (full dynamics baked in for Pencil, Inker, Stipple, Hair, Foliage, Gouache, Grunge, Watercolor, Calligraphy, Marker, Chalk, Spatter). User installs once, then picks an archetype as a starting point.
+2. **Tip authoring layers on top of the chosen archetype** — user picks "Stipple" archetype, then captures a custom tip and live-edits its spacing/angle/roundness. The dynamics ride along from the archetype.
+3. **For ad-hoc dynamics tweaking**, the user opens PS's native Brush Settings panel (F5). It's a UX seam — but PS's panel has its own live preview, so the tweaking experience is still tight.
 
 ## Source-of-truth model
 
-There is only one canonical brush state — the one in BrushBuddy's panel. The Photoshop dummy preset is a *projection*. The internal model is JSON, the dummy preset is regenerated from it on debounce.
-
 ```
 BrushBuddyState (in-memory, JSON)
-  ├── source tip (image data + edit history)
-  ├── semantic settings (chaos, wetness, …)
-  ├── derived parameters (PS descriptors, computed)
-  └── archetype lineage (which template did we start from)
+  ├── source tip image data
+  ├── tip op stack (warp/erode/feather/...)
+  ├── tip-level props (spacing, diameter, angle, roundness, hardness, flips)
+  └── selected archetype (ref to a bundled .abr)
 
-   ↓  on debounce / proof / save
+   ↓  on slider change (debounce ~50ms)
 
-Photoshop side
-  ├── "BrushBuddy Live Preview" preset (volatile, overwritten)
-  ├── "BrushBuddy Proof" layer (volatile, drawn on)
-  └── named preset (permanent, only on Save)
+Photoshop side (mutated via setBrushProps)
+  ├── current brush — sampledData + tip-level props from our state
+  └── Brush Settings panel preview (auto-updates)
 ```
 
-## Tip editor — a masking-cockpit, not a settings panel
+There is no volatile dummy preset, no proof layer, no scratch document. The current brush IS the live preview.
 
-The tip itself is a first-class artifact, not just an input. The tip editor exposes the operations artists already know from PS's masking and adjustment tools:
+## Tip editor — the masking cockpit
 
-- **Levels** (auto + manual black/white/gamma)
+The tip is a first-class artifact, edited non-destructively with an op stack. Every operation is replayable and individually toggleable:
+
+- **Levels** (auto + manual)
 - **Curves** (S-curve preset, custom)
-- **Feather** (selection feather + post-capture Gaussian)
-- **Threshold** (with hard/soft toggle — soft = S-curve, hard = step)
+- **Feather** (selection feather + Gaussian)
+- **Threshold** (hard/soft)
 - **Blur / Sharpen**
-- **Edge erosion** (morphological erode, for roughened edges)
+- **Edge erosion** (morphological erode)
 - **Noise** (additive, multiplicative, blue-noise)
-- **Warp / pinch / twist** (interactive transforms on the tip)
-- **Squash / roundness**
+- **Warp / pinch / twist** (interactive)
+- **Squash / roundness** (preview before committing to brush)
 - **Invert / mirror X / mirror Y**
-- **Auto-crop** (trim to alpha bounds + padding)
-- **Auto-center** (center-of-mass recenter)
+- **Auto-crop** / **Auto-center**
 
-Every operation is non-destructive: stored as an op in the edit stack, replayable, individually toggle-able. The Layer-1 canvas re-runs the stack on every change.
+The Layer-1 canvas re-runs the stack on every change. When the user is happy, the resulting raster is `defineBrush`d in PS and our tip-level props are applied via `setBrushProps`.
 
-## Dual Brush Lab (flagship differentiator)
+## Performance budgets (revised)
 
-Dual Brush is one of Photoshop's most powerful but least understood brush features. We make it tractable by treating it as an explicit composition system:
-
-- **Primary tip** = the main mark.
-- **Secondary tip** = the texture / gate / cutter.
-- **Composition mode** = how secondary modifies primary (Multiply, Subtract, Hard Mix, Linear Height, etc.) — labeled with perceptual descriptions, not just blend names.
-- **Live preview** shows how the secondary breaks up, masks, or patterns the primary stroke.
-- **Swap** primary ↔ secondary in one click.
-- **Semantic sliders for the dual interaction**:
-  - "more broken"
-  - "more speckled"
-  - "more bristly"
-  - "more stamped"
-  - "less repetitive"
-  - "more natural edge"
-
-Why this earns its keep: PS's Dual Brush UI is a Russian-doll panel-inside-a-panel with no preview of the *interaction*. A visual lab for it is genuinely new ground.
-
-## Performance budgets
-
-| Operation | Budget |
-|---|---|
-| Canvas preview redraw | < 16 ms (60 fps) |
-| Tip edit op (single) | < 50 ms |
-| Tip edit stack replay (full) | < 150 ms |
-| Debounced PS update + proof | < 600 ms |
-| Save final preset | < 1 s |
-
-Where Photoshop is in the loop, latency is what it is — we measure and degrade gracefully.
+| Operation | Budget | Spike-measured |
+|---|---|---|
+| Canvas tip-edit op (single) | < 50 ms | n/a (M1) |
+| Tip op stack replay | < 150 ms | n/a (M1) |
+| `setBrushProps` round-trip | < 100 ms | **11–24 ms** ✓ |
+| `defineBrush` from selection | < 5 s | 2–8 s ✓ (PS-side, one-time) |
 
 ## What we don't do
 
-- Real-time interception of the user's actual painting strokes (PS doesn't expose it).
-- Custom brush engine that replaces PS's (off-mission and reproducing PS's engine pixel-perfect is intractable).
-- Direct `.abr` file write (undocumented format with two generations; drive PS's export action instead).
-- Pixel-perfect parity between Layer-1 simulated preview and Layer-2 PS proof. The simulated preview is a *guide*; the proof is *truth*.
+- Real-time interception of the user's painting strokes (PS doesn't expose it).
+- Custom brush engine (off-mission; PS's preview is canonical).
+- Direct `.abr` file authoring from scratch in code (we ship hand-authored archetype `.abr`s instead — same outcome, vastly less work).
+- In-product dynamics editing (deferred to PS's native panel; archetype-based instead).
