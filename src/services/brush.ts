@@ -341,14 +341,30 @@ export async function selectLivePreviewBrush(): Promise<string> {
 // Apply primary dynamics (Stipple-ish recipe).
 // Sets the *current brush preset's* settings via currentToolOptions.
 // ---------------------------------------------------------------------------
-// Minimal: just bump spacing. Uses get→merge→set workaround.
+// Minimal: just bump spacing. Uses the working setBrushProps path.
 export async function applyMinimalSpacingOnly(): Promise<void> {
   await executeAsModal("BrushBuddy: spacing only", async () => {
     await ensureBrushTool();
-    await patchToolOptions({
+    await setBrushProps({
       spacing: { _unit: "percentUnit", _value: 180 },
     });
   });
+}
+
+/**
+ * The working SET path discovered in the M0 spike: target the brush ref
+ * directly with a sampledBrush descriptor. PS accepts partial sampledBrush
+ * descriptors here (you don't need to send every field).
+ *
+ * This is the load-bearing primitive for all brush mutations.
+ */
+async function setBrushProps(props: any): Promise<void> {
+  await bp([{
+    _obj: "set",
+    _target: [{ _ref: "brush", _enum: "ordinal", _value: "targetEnum" }],
+    to: { _obj: "sampledBrush", ...props },
+    _options: { dialogOptions: "dontDisplay" },
+  }]);
 }
 
 // Read current tool options (the descriptor PS uses for the active brush).
@@ -396,11 +412,12 @@ function brVr(jitter: number, opts: { control?: number; fadeStep?: number; minim
   };
 }
 
-// Shape Dynamics only — uses the discovered $szVr key + get→merge→set.
+// Shape Dynamics — try sending the dynamics fields via the brush ref. Whether
+// PS accepts these on a sampledBrush descriptor is the next open question.
 export async function applyShapeDynamicsOnly(): Promise<void> {
   await executeAsModal("BrushBuddy: shape dynamics only", async () => {
     await ensureBrushTool();
-    await patchToolOptions({
+    await setBrushProps({
       useTipDynamics: true,
       $szVr: brVr(25),
       minimumDiameter: { _unit: "percentUnit", _value: 30 },
@@ -411,7 +428,7 @@ export async function applyShapeDynamicsOnly(): Promise<void> {
 export async function applyStippleDynamics(): Promise<void> {
   await executeAsModal("BrushBuddy: apply dynamics", async () => {
     await ensureBrushTool();
-    await patchToolOptions({
+    await setBrushProps({
       // Shape Dynamics — size jitter w/ minimum diameter floor.
       useTipDynamics: true,
       $szVr: brVr(25),
@@ -438,11 +455,10 @@ export async function applyStippleDynamics(): Promise<void> {
 export async function applyDualBrush(): Promise<void> {
   await executeAsModal("BrushBuddy: apply dual brush", async () => {
     await ensureBrushTool();
-    // Merge with current to preserve the existing secondary brush descriptor;
-    // we only override the dual-brush flags.
+    // Try setting dualBrush as a sub-property of the brush descriptor.
     const current = await getToolOptions();
     const currentDual = current?.dualBrush ?? { _obj: "dualBrush" };
-    await patchToolOptions({
+    await setBrushProps({
       dualBrush: {
         ...currentDual,
         _obj: "dualBrush",
